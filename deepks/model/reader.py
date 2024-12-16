@@ -1,7 +1,7 @@
 import os,time,sys
 import numpy as np
 import torch
-import psutil
+# import psutil
 
 def concat_batch(tdicts, dim=0):
     keys = tdicts[0].keys()
@@ -27,9 +27,9 @@ def generalized_eigh(h,L_inv):
     return e,psi
 
 def cal_vdp(psialpha,gevdm):
-    process = psutil.Process(os.getpid())
-    before_memory_usage = process.memory_info().rss
-    start=time.time()
+    # process = psutil.Process(os.getpid())
+    # before_memory_usage = process.memory_info().rss
+    # start=time.time()
 
     v_delta_precalc_temp=torch.einsum("...kyan,...avmn->...kyavm",psialpha,gevdm)
 
@@ -50,12 +50,12 @@ def cal_vdp(psialpha,gevdm):
     vdp=torch.cat(vdp_vector,dim=-1)
     del vdp_vector
 
-    end=time.time()
-    after_memory_usage = process.memory_info().rss
-    memory_growth = after_memory_usage - before_memory_usage
-    print(f"Memory growth during cal vdp: {memory_growth / 1024 / 1024} MB")
+    # end=time.time()
+    # after_memory_usage = process.memory_info().rss
+    # memory_growth = after_memory_usage - before_memory_usage
+    # print(f"Memory growth during cal vdp: {memory_growth / 1024 / 1024} MB")
 
-    print("all cal_vdp time:",end-start)
+    # print("all cal_vdp time:",end-start)
     return vdp
 
 class Reader(object):

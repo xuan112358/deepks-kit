@@ -19,7 +19,7 @@ from deepks.utils import load_dirs, load_elem_table
 
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-# DEVICE = torch.device("cpu")
+#DEVICE = torch.device("cpu")
 
 
 def fit_elem_const(g_reader, test_reader=None, elem_table=None, ridge_alpha=0.):
@@ -333,13 +333,46 @@ class Evaluator:
             info+=f"{name}_density".rjust(len)
         print(info,end='')
 
+class NatomLossList:
+    def __init__(self):
+        self.natom_loss_list=dict()
+        self.n_loss_term=0
+    
+    def clear_loss(self):
+        if not self.n_loss_term:
+            self.n_loss_term=len(self.natom_loss_list[list(self.natom_loss_list.keys())[0]][0])
+        #don't clear natom, just sample_all_batch in the beginning gives all data 
+        for natom in self.natom_loss_list.keys():
+            self.natom_loss_list[natom]=[[0. for _ in range(self.n_loss_term)]]
+    
+    def add_loss(self,natom,loss):
+        if natom not in self.natom_loss_list.keys():
+            self.natom_loss_list[natom]=[]
+        self.natom_loss_list[natom].append([loss_term.item() for loss_term in loss])
+    
+    def natoms(self):
+        return sorted(self.natom_loss_list.keys())
+    
+    def avg_atom_loss(self):
+        # avg upon data
+        return {natom:np.mean(losses,axis=0) for (natom,losses) in self.natom_loss_list.items()}
+    
+    def print_avg_atom_loss(self):
+        avg_atom_loss = sorted(self.avg_atom_loss().items(), key=lambda x: x[0])
+        for (atom,aal) in avg_atom_loss:
+            for avg_atom_loss_term in aal[:-1]:
+                print(f"{avg_atom_loss_term:>18.4e}",end='')
+
+    def avg_loss(self):
+        # avg upon data and natom
+        return np.mean([loss for losses in self.natom_loss_list.values() for loss in losses ],axis=0)
 
 def train(model, g_reader, n_epoch=1000, test_reader=None, *,
           energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., psi_factor=0.,psi_occ=0, band_factor=0.,band_occ=0,density_factor=0.,
           energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, band_loss=None, grad_penalty=0.,
           start_lr=0.001, decay_steps=100, decay_rate=0.96, stop_lr=None,
           weight_decay=0.,  fix_embedding=False,
-          display_epoch=100, display_detail_test=0, ckpt_file="model.pth",
+          display_epoch=100, display_detail_test=0, display_natom_loss=False, ckpt_file="model.pth",
           graph_file=None, device=DEVICE):
     
     model = model.to(device)
@@ -393,14 +426,36 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
     evaluator.print_head("trn_loss",data_keys)
     if display_detail_test:
         test_eval.print_head("tst_loss",data_keys)
-    print("")
-    
+    # print("")
+
     tic = time()
-    trn_loss = np.mean([[loss_term.item() for loss_term in evaluator(model, batch)]
-                    for batch in g_reader.sample_all_batch()],axis=0)
-    tst_loss = np.mean([[loss_term.item() for loss_term in test_eval(model, batch)]
-                    for batch in test_reader.sample_all_batch()],axis=0)
+    trn_natom_loss_list=NatomLossList()
+    tst_natom_loss_list=NatomLossList()
+    for batch in g_reader.sample_all_batch():
+        loss=evaluator(model,batch)
+        natom=batch["eig"].shape[1]
+        trn_natom_loss_list.add_loss(natom,loss)
+    trn_loss=trn_natom_loss_list.avg_loss()
+    for batch in test_reader.sample_all_batch():
+        loss=test_eval(model,batch)
+        natom=batch["eig"].shape[1]
+        tst_natom_loss_list.add_loss(natom,loss)
+    tst_loss=tst_natom_loss_list.avg_loss()    
+    # trn_loss = np.mean([[loss_term.item() for loss_term in evaluator(model, batch)]
+    #                 for batch in g_reader.sample_all_batch()],axis=0)
+    # tst_loss = np.mean([[loss_term.item() for loss_term in test_eval(model, batch)]
+    #                 for batch in test_reader.sample_all_batch()],axis=0)
     tst_time = time() - tic
+    if display_natom_loss:
+        for natom in trn_natom_loss_list.natoms():
+            evaluator.print_head(str(natom)+"_trn",data_keys)        
+        for natom in tst_natom_loss_list.natoms():
+            if display_detail_test:
+                test_eval.print_head(str(natom)+"_tst",data_keys)
+            else:
+                test_eval.print_head(str(natom)+"_tst",[])#just energy
+    print("")
+
     print(f"  {0:<8d}  {np.sqrt(np.abs(trn_loss[-1])):>.2e}  {np.sqrt(np.abs(tst_loss[-1])):>.2e}"
           f"  {start_lr:>.2e}  {0:>8.2f}  {tst_time:>8.2f}",end='')
     for loss_term in trn_loss[:-1]:
@@ -408,27 +463,40 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
     if display_detail_test:
         for loss_term in tst_loss[:-1]:
             print(f"{loss_term:>18.4e}",end='')
+    if display_natom_loss:
+        trn_natom_loss_list.print_avg_atom_loss()     
+        tst_natom_loss_list.print_avg_atom_loss()     
     print('')
 
     for epoch in range(1, n_epoch+1):
         tic = time()
-        loss_list = []
+        # loss_list = []
+        trn_natom_loss_list.clear_loss()
+        tst_natom_loss_list.clear_loss()
         for sample in g_reader:
             model.train()
             optimizer.zero_grad()
             loss = evaluator(model, sample)
             loss[-1].backward()
             optimizer.step()
-            loss_list.append([loss_term.item() for loss_term in loss])
+            # loss_list.append([loss_term.item() for loss_term in loss])
+            natom=sample["eig"].shape[1]
+            trn_natom_loss_list.add_loss(natom,loss)
         scheduler.step()
 
         if epoch % display_epoch == 0:
             model.eval()
-            trn_loss = np.mean(loss_list,axis=0)
+            # trn_loss = np.mean(loss_list,axis=0)
+            trn_loss=trn_natom_loss_list.avg_loss()
             trn_time = time() - tic
             tic = time()
-            tst_loss = np.mean([[loss_term.item() for loss_term in test_eval(model, batch)]
-                            for batch in test_reader.sample_all_batch()],axis=0)
+            # tst_loss = np.mean([[loss_term.item() for loss_term in test_eval(model, batch)]
+            #                 for batch in test_reader.sample_all_batch()],axis=0)
+            for batch in test_reader.sample_all_batch():
+                loss=test_eval(model,batch)
+                natom=batch["eig"].shape[1]
+                tst_natom_loss_list.add_loss(natom,loss)
+            tst_loss=tst_natom_loss_list.avg_loss()  
             tst_time = time() - tic
             print(f"  {epoch:<8d}  {np.sqrt(np.abs(trn_loss[-1])):>.2e}  {np.sqrt(np.abs(tst_loss[-1])):>.2e}"
                   f"  {scheduler.get_last_lr()[0]:>.2e}  {trn_time:>8.2f}  {tst_time:8.2f}",end='')
@@ -436,7 +504,10 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                 print(f"{loss_term:>18.4e}",end='')
             if display_detail_test and epoch%(display_detail_test*display_epoch) == 0:
                 for loss_term in tst_loss[:-1]:
-                    print(f"{loss_term:>18.4e}",end='')               
+                    print(f"{loss_term:>18.4e}",end='')
+            if display_natom_loss:
+                trn_natom_loss_list.print_avg_atom_loss()
+                tst_natom_loss_list.print_avg_atom_loss()                 
             print('')
             if ckpt_file:
                 model.save(ckpt_file)
