@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from time import time
+import psutil
 try:
     import deepks
 except ImportError as e:
@@ -18,6 +19,7 @@ from deepks.utils import load_dirs, load_elem_table
 
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+#DEVICE = torch.device("cpu")
 
 
 def fit_elem_const(g_reader, test_reader=None, elem_table=None, ridge_alpha=0.):
@@ -56,6 +58,52 @@ def preprocess(model, g_reader,
             ridge_alpha=prefit_ridge, symm_sections=symm_sec)
         model.set_prefitting(weight, bias, trainable=prefit_trainable)
 
+def cal_v_delta(gev,gevdm,psialpha):
+    process = psutil.Process(os.getpid())
+    before_memory_usage = process.memory_info().rss
+
+    mmax=psialpha.size(-1)
+    lmax=int((mmax-1)/2)
+    n=int(psialpha.size(2)/(lmax+1))
+
+    n_batch=psialpha.size(0)
+    nks=psialpha.size(-3)
+    nlocal=psialpha.size(-2)
+    v_delta=torch.zeros([n_batch,nks,nlocal,nlocal],dtype=gev.dtype,device=DEVICE)
+    for l in range(lmax+1):
+        gevdm_l=gevdm[...,n*l:n*(l+1),:2*l+1,:2*l+1,:2*l+1]
+        gev_l=gev[...,n*l**2:n*(l+1)**2]
+        # print(gevdm_l.shape,gev_l.shape)
+
+        gev_l=gev_l.view(gev_l.size(0),gev_l.size(1),n,2*l+1)
+        #gev_l=gev_l.permute(0,2,1,3)
+        # print(gev_l.shape)
+
+        temp_1=torch.einsum("...v,...vmn->...mn", gev_l, gevdm_l)
+        # print(temp_1.shape)
+        del gev_l,gevdm_l
+
+        psialpha_l=psialpha[...,n*l:n*(l+1),:,:,:2*l+1]
+        # print(psialpha_l.shape)
+        temp_2=torch.einsum("...mn,...kxn->...kxm",temp_1,psialpha_l)
+        # print(temp_2.shape)
+        del temp_1
+
+        vdp_nl=torch.einsum("...alkxm,...alkym->...kxy",temp_2,psialpha_l)
+        #vdp_nl=torch.einsum("...alkxy->kxy",temp_3)
+        # print(vdp_nl.shape)
+        del temp_2,psialpha_l
+
+        v_delta+=vdp_nl
+        # print(v_delta.shape)
+        del vdp_nl
+
+    after_memory_usage = process.memory_info().rss
+    memory_growth = after_memory_usage - before_memory_usage
+    print(f"Memory growth during cal vdp: {memory_growth / 1024 /1024 } MB")
+
+    # print("v_delta.shape",v_delta.shape)
+    return v_delta
 
 def make_loss(cap=None, shrink=None, reduction="mean"):
     def loss_fn(input, target):
@@ -80,6 +128,7 @@ def make_loss(cap=None, shrink=None, reduction="mean"):
 
 # equiv to nn.MSELoss()
 L2LOSS = make_loss(cap=None, shrink=None, reduction="mean")
+
 
 # use every psi_pred and -1*psi_pred to compare with corresponding psi_label, given that psi can have coeficient freedom of +-1 (for gamma only)
 def cal_psi_loss(psi_pred,psi_label,psi_occ):
@@ -201,25 +250,31 @@ class Evaluator:
                 o_pred = torch.einsum("...iap,...ap->...i", op, gev)
                 tot_loss = tot_loss + self.o_factor * self.o_lossfn(o_pred, o_label)
                 loss.append(self.o_factor * self.o_lossfn(o_pred, o_label))
-            # optional v_delta calculation
-            if self.vd_factor > 0 and "lb_vd" in sample:
-                vd_label, vdp = sample["lb_vd"], sample["vdp"]
-                vd_pred = torch.einsum("...kxyap,...ap->...kxy", vdp, gev)
-                tot_loss = tot_loss + self.vd_factor * self.vd_lossfn(vd_pred, vd_label)
-                loss.append(self.vd_factor * self.vd_lossfn(vd_pred, vd_label))
-            # optional psi calculation
-            if self.psi_factor > 0 and "lb_psi" in sample:
-                psi_label, h_base = sample["lb_psi"], sample["h_base"]
-                vdp = sample["vdp"]
-                v_delta = torch.einsum("...kxyap,...ap->...kxy", vdp, gev)
-                if "L_inv" in sample:
-                    L_inv=sample["L_inv"]
-                    band_pred,psi_pred=generalized_eigh(h_base+v_delta,L_inv)
-                else:
-                    band_pred,psi_pred= torch.linalg.eigh(h_base+v_delta,UPLO='U')
-                psi_loss = self.psi_factor * cal_psi_loss(psi_pred,psi_label,self.psi_occ)
-                tot_loss = tot_loss + psi_loss
-                loss.append(psi_loss)
+            if (self.vd_factor > 0 and "lb_vd" in sample) or (self.psi_factor > 0 and "lb_psi" in sample):
+                if "vdp" in sample:
+                    vdp = sample["vdp"]
+                    vd_pred = torch.einsum("...kxyap,...ap->...kxy", vdp, gev)
+                elif "psialpha" in sample and "gevdm" in sample:                  
+                    start=time()
+                    vd_pred = cal_v_delta(gev,sample["gevdm"],sample["psialpha"])
+                    end=time()
+                    print("cal vdp time in batch:",end-start)
+                # optional v_delta calculation
+                if self.vd_factor > 0 and "lb_vd" in sample:
+                    vd_label = sample["lb_vd"]
+                    tot_loss = tot_loss + self.vd_factor * self.vd_lossfn(vd_pred, vd_label)
+                    loss.append(self.vd_factor * self.vd_lossfn(vd_pred, vd_label))
+                # optional psi calculation
+                if self.psi_factor > 0 and "lb_psi" in sample:
+                    psi_label, h_base = sample["lb_psi"], sample["h_base"]
+                    if "L_inv" in sample:
+                        L_inv=sample["L_inv"]
+                        band_pred,psi_pred=generalized_eigh(h_base+vd_pred,L_inv)
+                    else:
+                        band_pred,psi_pred= torch.linalg.eigh(h_base+vd_pred,UPLO='U')
+                    psi_loss = self.psi_factor * cal_psi_loss(psi_pred,psi_label,self.psi_occ)
+                    tot_loss = tot_loss + psi_loss
+                    loss.append(psi_loss)
             # density loss with fix head grad
             if self.d_factor > 0 and "gldv" in sample:
                 gldv = sample["gldv"]
@@ -229,7 +284,7 @@ class Evaluator:
         return loss
     
     def print_head(self,name,data_keys):
-        len=18
+        len=30
         info=f"{name}_energy".rjust(len)
         if self.g_penalty > 0 and "eg0" in data_keys:
             info+=f"{name}_grad".rjust(len)
@@ -395,7 +450,10 @@ def main(train_paths, test_paths=None,
         model = CorrNet(**model_args).double()
         
     preprocess(model, g_reader, **preprocess_args)
+    start=time()
     train(model, g_reader, test_reader=test_reader, **train_args)
+    end=time()
+    print("all train time:",end-start)
 
 
 if __name__ == "__main__":
