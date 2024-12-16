@@ -27,6 +27,7 @@ class Reader(object):
                  f_name="l_f_delta", gvx_name="grad_vx", 
                  s_name="l_s_delta", gvepsl_name="grad_vepsl", 
                  o_name="l_o_delta", op_name="orbital_precalc",
+                 h_name="l_h_delta", vdp_name="v_delta_precalc",
                  eg_name="eg_base", gveg_name="grad_veg", 
                  gldv_name="grad_ldv", conv_name="conv", 
                  atom_name="atom", **kwargs):
@@ -36,10 +37,12 @@ class Reader(object):
         self.f_path = self.check_exist(f_name+".npy")
         self.s_path = self.check_exist(s_name+".npy")
         self.o_path = self.check_exist(o_name+".npy")
+        self.h_path = self.check_exist(h_name+".npy")
         self.d_path = self.check_exist(d_name+".npy")
         self.gvx_path = self.check_exist(gvx_name+".npy")
         self.gvepsl_path = self.check_exist(gvepsl_name+".npy")
         self.op_path = self.check_exist(op_name+".npy")
+        self.vdp_path = self.check_exist(vdp_name+".npy")
         self.eg_path = self.check_exist(eg_name+".npy")
         self.gveg_path = self.check_exist(gveg_name+".npy")
         self.gldv_path = self.check_exist(gldv_name+".npy")
@@ -119,6 +122,17 @@ class Reader(object):
             self.t_data["op"] = torch.tensor(
                 np.load(self.op_path)\
                     .reshape(raw_nframes, -1, self.natm, self.ndesc)[conv])
+        if self.h_path is not None and self.vdp_path is not None:
+            h_shape = np.load(self.h_path).shape
+            assert h_shape[-1] == h_shape[-2], \
+                f"The last two dimension of H must have the same size , which is nlocal"
+            self.nlocal = h_shape[-1]
+            self.t_data["lb_vd"] = torch.tensor(
+                np.load(self.h_path)\
+                  .reshape(raw_nframes, -1, self.nlocal, self.nlocal)[conv]) #-1 for nks
+            self.t_data["vdp"] = torch.tensor(
+                np.load(self.vdp_path)\
+                    .reshape(raw_nframes, -1, self.nlocal, self.nlocal, self.natm, self.ndesc)[conv])
         if self.eg_path is not None and self.gveg_path is not None:
             self.t_data['eg0'] = torch.tensor(
                 np.load(self.eg_path)\

@@ -85,9 +85,11 @@ class Evaluator:
     def __init__(self,
                  energy_factor=1., force_factor=0., 
                  stress_factor=0., orbital_factor=0.,
+                 v_delta_factor=0.,
                  density_factor=0., grad_penalty=0., 
                  energy_lossfn=None, force_lossfn=None, 
-                 stress_lossfn=None, orbital_lossfn=None):
+                 stress_lossfn=None, orbital_lossfn=None,
+                 v_delta_lossfn=None):
         # energy term
         if energy_lossfn is None:
             energy_lossfn = {}
@@ -116,6 +118,13 @@ class Evaluator:
             orbital_lossfn = make_loss(**orbital_lossfn)
         self.o_factor = orbital_factor
         self.o_lossfn = orbital_lossfn
+        # v_delta term
+        if v_delta_lossfn is None:
+            v_delta_lossfn = {}  
+        if isinstance(v_delta_lossfn, dict):
+            v_delta_lossfn = make_loss(**v_delta_lossfn)
+        self.vd_factor = v_delta_factor
+        self.vd_lossfn = v_delta_lossfn              
         # coulomb term of dm; requires head gradient
         self.d_factor = density_factor
         # gradient penalty, not very useful
@@ -123,19 +132,24 @@ class Evaluator:
 
     def __call__(self, model, sample):
         _dref = next(model.parameters())
+        print("_dref:")
+        print(_dref)
         tot_loss = 0.
+        loss=[]
         sample = {k: v.to(_dref, non_blocking=True) for k, v in sample.items()}
         e_label, eig = sample["lb_e"], sample["eig"]
         nframe = e_label.shape[0]
         requires_grad =  ( (self.f_factor > 0 and "lb_f" in sample) 
                         or (self.s_factor > 0 and "lb_s" in sample) 
                         or (self.o_factor > 0 and "lb_o" in sample)
+                        or (self.vd_factor > 0 and "lb_vd" in sample)
                         or (self.d_factor > 0 and "gldv" in sample)
                         or self.g_penalty > 0)
         eig.requires_grad_(requires_grad)
         # begin the calculation
         e_pred = model(eig)
         tot_loss = tot_loss + self.e_factor * self.e_lossfn(e_pred, e_label)
+        loss.append(self.e_factor * self.e_lossfn(e_pred, e_label))
         if requires_grad:
             [gev] = torch.autograd.grad(e_pred, eig, 
                         grad_outputs=torch.ones_like(e_pred),
@@ -145,31 +159,65 @@ class Evaluator:
                 eg_base, gveg = sample["eg0"], sample["gveg"]
                 eg_tot = torch.einsum('...apg,...ap->...g', gveg, gev) + eg_base
                 tot_loss = tot_loss + self.g_penalty * eg_tot.pow(2).mean(0).sum()
+                loss.append(self.g_penalty * eg_tot.pow(2).mean(0).sum())
             # optional force calculation
             if self.f_factor > 0 and "lb_f" in sample:
                 f_label, gvx = sample["lb_f"], sample["gvx"]
                 f_pred = - torch.einsum("...bxap,...ap->...bx", gvx, gev)
                 tot_loss = tot_loss + self.f_factor * self.f_lossfn(f_pred, f_label)
+                loss.append(self.f_factor * self.f_lossfn(f_pred, f_label))
             # optional stress calculation
             if self.s_factor > 0 and "lb_s" in sample:
                 s_label, gvepsl = sample["lb_s"], sample["gvepsl"]
                 s_pred = torch.einsum("...iap,...ap->...i", gvepsl, gev)
                 tot_loss = tot_loss + self.s_factor * self.s_lossfn(s_pred, s_label)
+                loss.append(self.s_factor * self.s_lossfn(s_pred, s_label))
             # optional orbital(bandgap) calculation
             if self.o_factor > 0 and "lb_o" in sample:
                 o_label, op = sample["lb_o"], sample["op"]
                 o_pred = torch.einsum("...iap,...ap->...i", op, gev)
                 tot_loss = tot_loss + self.o_factor * self.o_lossfn(o_pred, o_label)
+                loss.append(self.o_factor * self.o_lossfn(o_pred, o_label))
+            # optional v_delta calculation
+            if self.vd_factor > 0 and "lb_vd" in sample:
+                vd_label, vdp = sample["lb_vd"], sample["vdp"]
+                vd_pred = torch.einsum("...kxyap,...ap->...kxy", vdp, gev)
+                tot_loss = tot_loss + self.vd_factor * self.vd_lossfn(vd_pred, vd_label)
+                loss.append(self.vd_factor * self.vd_lossfn(vd_pred, vd_label))
             # density loss with fix head grad
             if self.d_factor > 0 and "gldv" in sample:
                 gldv = sample["gldv"]
                 tot_loss = tot_loss + self.d_factor * (gldv * gev).mean(0).sum()
-        return tot_loss
+                loss.append(self.d_factor * (gldv * gev).mean(0).sum())
+        loss.append(tot_loss)
+        return loss
+    
+    def print_head(self,name,data_keys):
+        len=18
+        info=f"{name}_energy".rjust(len)
+        if self.g_penalty > 0 and "eg0" in data_keys:
+            info+=f"{name}_grad".rjust(len)
+        # optional force calculation
+        if self.f_factor > 0 and "lb_f" in data_keys:
+            info+=f"{name}_force".rjust(len)
+        # optional stress calculation
+        if self.s_factor > 0 and "lb_s" in data_keys:
+            info+=f"{name}_stress".rjust(len)
+        # optional orbital(bandgap) calculation
+        if self.o_factor > 0 and "lb_o" in data_keys:
+            info+=f"{name}_bandgap".rjust(len)
+        # optional v_delta calculation
+        if self.vd_factor > 0 and "lb_vd" in data_keys:
+            info+=f"{name}_v_delta".rjust(len)
+        # density loss with fix head grad
+        if self.d_factor > 0 and "gldv" in data_keys:
+            info+=f"{name}_density".rjust(len)
+        print(info)
 
 
 def train(model, g_reader, n_epoch=1000, test_reader=None, *,
-          energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., density_factor=0.,
-          energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, grad_penalty=0.,
+          energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., density_factor=0.,
+          energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, grad_penalty=0.,
           start_lr=0.001, decay_steps=100, decay_rate=0.96, stop_lr=None,
           weight_decay=0.,  fix_embedding=False,
           display_epoch=100, ckpt_file="model.pth",
@@ -193,22 +241,29 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
     # make evaluators for training
     evaluator = Evaluator(energy_factor=energy_factor, force_factor=force_factor, 
                           stress_factor=stress_factor, orbital_factor=orbital_factor,
+                          v_delta_factor=v_delta_factor,
                           energy_lossfn=energy_loss, force_lossfn=force_loss,
                           stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
+                          v_delta_lossfn=v_delta_loss,
                           density_factor=density_factor, grad_penalty=grad_penalty)
     # make test evaluator that only returns l2loss of energy
     test_eval = Evaluator(energy_factor=1., energy_lossfn=L2LOSS, 
                           force_factor=0., density_factor=0., grad_penalty=0.)
 
-    print("# epoch      trn_err   tst_err        lr  trn_time  tst_time ")
+    print("# epoch      trn_err   tst_err        lr  trn_time  tst_time",end='')
+    data_keys = g_reader.readers[0].sample_all().keys()
+    evaluator.print_head("trn_loss",data_keys)
     tic = time()
-    trn_loss = np.mean([evaluator(model, batch).item() 
-                    for batch in g_reader.sample_all_batch()])
-    tst_loss = np.mean([test_eval(model, batch).item() 
-                    for batch in test_reader.sample_all_batch()])
+    trn_loss = np.mean([[loss_term.item() for loss_term in evaluator(model, batch)]
+                    for batch in g_reader.sample_all_batch()],axis=0)
+    tst_loss = np.mean([[loss_term.item() for loss_term in test_eval(model, batch)]
+                    for batch in test_reader.sample_all_batch()],axis=0)
     tst_time = time() - tic
-    print(f"  {0:<8d}  {np.sqrt(np.abs(trn_loss)):>.2e}  {np.sqrt(np.abs(tst_loss)):>.2e}"
-          f"  {start_lr:>.2e}  {0:>8.2f}  {tst_time:>8.2f}")
+    print(f"  {0:<8d}  {np.sqrt(np.abs(trn_loss[-1])):>.2e}  {np.sqrt(np.abs(tst_loss[-1])):>.2e}"
+          f"  {start_lr:>.2e}  {0:>8.2f}  {tst_time:>8.2f}",end='')
+    for loss_term in trn_loss[:-1]:
+        print(f"{loss_term:>18.4e}",end='')
+    print('')
 
     for epoch in range(1, n_epoch+1):
         tic = time()
@@ -217,21 +272,24 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
             model.train()
             optimizer.zero_grad()
             loss = evaluator(model, sample)
-            loss.backward()
+            loss[-1].backward()
             optimizer.step()
-            loss_list.append(loss.item())
+            loss_list.append([loss_term.item() for loss_term in loss])
         scheduler.step()
 
         if epoch % display_epoch == 0:
             model.eval()
-            trn_loss = np.mean(loss_list)
+            trn_loss = np.mean(loss_list,axis=0)
             trn_time = time() - tic
             tic = time()
-            tst_loss = np.mean([test_eval(model, batch).item() 
-                            for batch in test_reader.sample_all_batch()])
+            tst_loss = np.mean([[loss_term.item() for loss_term in test_eval(model, batch)]
+                            for batch in test_reader.sample_all_batch()],axis=0)
             tst_time = time() - tic
-            print(f"  {epoch:<8d}  {np.sqrt(np.abs(trn_loss)):>.2e}  {np.sqrt(np.abs(tst_loss)):>.2e}"
-                  f"  {scheduler.get_last_lr()[0]:>.2e}  {trn_time:>8.2f}  {tst_time:8.2f}")
+            print(f"  {epoch:<8d}  {np.sqrt(np.abs(trn_loss[-1])):>.2e}  {np.sqrt(np.abs(tst_loss[-1])):>.2e}"
+                  f"  {scheduler.get_last_lr()[0]:>.2e}  {trn_time:>8.2f}  {tst_time:8.2f}",end='')
+            for loss_term in trn_loss[:-1]:
+                print(f"{loss_term:>18.4e}",end='')
+            print('')
             if ckpt_file:
                 model.save(ckpt_file)
 

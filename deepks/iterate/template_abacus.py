@@ -63,6 +63,7 @@ DEFAULT_SCF_ARGS_ABACUS={
     "cal_force": 0,
     "cal_stress": 0,
     "deepks_bandgap": 0,
+    "deepks_v_delta": 0,
     "deepks_out_labels":1,
     "deepks_scf":0,
     "lattice_constant": 1,
@@ -370,7 +371,7 @@ def make_run_scf_abacus(systems_train, systems_test=None,
 
 
 def gather_stats_abacus(systems_train, systems_test, 
-                train_dump, test_dump, cal_force=0, cal_stress=0, deepks_bandgap=0, **stat_args):
+                train_dump, test_dump, cal_force=0, cal_stress=0, deepks_bandgap=0, deepks_v_delta=0, **stat_args):
     sys_train_paths = [os.path.abspath(s) for s in load_sys_paths(systems_train)]
     sys_test_paths = [os.path.abspath(s) for s in load_sys_paths(systems_test)]
     sys_train_paths = [get_sys_name(s) for s in sys_train_paths]
@@ -395,11 +396,14 @@ def gather_stats_abacus(systems_train, systems_test,
         f0_list=[]
         s0_list=[]
         o0_list=[]
+        h0_list=[]
         e_list=[]
         f_list=[]
         s_list=[]
         o_list=[]
+        h_list=[]
         op_list=[]
+        vdp_list=[] #v_delta_precalc
         gvx_list=[]
         gvepsl_list=[]
         for f in range(nframes):
@@ -437,6 +441,14 @@ def gather_stats_abacus(systems_train, systems_test,
                 if os.path.exists(f"{sys_train_paths[i]}/ABACUS/{f}/orbital_precalc.npy"):
                     orbital_precalc=np.load(f"{sys_train_paths[i]}/ABACUS/{f}/orbital_precalc.npy")
                     op_list.append(orbital_precalc)             
+            if(deepks_v_delta):
+                hcs=np.load(f"{sys_train_paths[i]}/ABACUS/{f}/h_base.npy")
+                h0_list.append(hcs/2)      
+                hcs=np.load(f"{sys_train_paths[i]}/ABACUS/{f}/h_tot.npy")
+                h_list.append(hcs/2)
+                if os.path.exists(f"{sys_train_paths[i]}/ABACUS/{f}/v_delta_precalc.npy"):
+                    v_delta_precalc=np.load(f"{sys_train_paths[i]}/ABACUS/{f}/v_delta_precalc.npy")
+                    vdp_list.append(v_delta_precalc)              
         np.save(f"{train_dump}/{sys_train_names[i]}/conv.npy", c_list)
         dm_eig=np.array(d_list)   #concatenate
         np.save(f"{train_dump}/{sys_train_names[i]}/dm_eig.npy", dm_eig)
@@ -474,6 +486,15 @@ def gather_stats_abacus(systems_train, systems_test,
             np.save(f"{train_dump}/{sys_train_names[i]}/o_tot.npy", np.array(o_list))
             if len(op_list) > 0:
                 np.save(f"{train_dump}/{sys_train_names[i]}/orbital_precalc.npy", np.array(op_list))
+        if(deepks_v_delta): 
+            h_base=np.array(h0_list)
+            np.save(f"{train_dump}/{sys_train_names[i]}/h_base.npy", h_base)
+            h_ref=np.load(f"{sys_train_paths[i]}/hamitonian.npy")
+            np.save(f"{train_dump}/{sys_train_names[i]}/hamitonian.npy", h_ref)
+            np.save(f"{train_dump}/{sys_train_names[i]}/l_h_delta.npy", h_ref-h_base)
+            np.save(f"{train_dump}/{sys_train_names[i]}/h_tot.npy", np.array(h_list))
+            if len(vdp_list) > 0:
+                np.save(f"{train_dump}/{sys_train_names[i]}/v_delta_precalc.npy", np.array(vdp_list))
     #concatenate data (test)
     if not os.path.exists(test_dump):
             os.mkdir(test_dump)
@@ -488,11 +509,14 @@ def gather_stats_abacus(systems_train, systems_test,
         f0_list=[]
         s0_list=[]
         o0_list=[]
+        h0_list=[]
         e_list=[]
         f_list=[]
         s_list=[]
         o_list=[]
+        h_list=[]
         op_list=[]
+        vdp_list=[] #v_delta_precalc
         gvx_list=[]
         gvepsl_list=[]
         for f in range(nframes):
@@ -530,6 +554,14 @@ def gather_stats_abacus(systems_train, systems_test,
                 if os.path.exists(f"{sys_test_paths[i]}/ABACUS/{f}/orbital_precalc.npy"):
                     orbital_precalc=np.load(f"{sys_test_paths[i]}/ABACUS/{f}/orbital_precalc.npy")
                     op_list.append(orbital_precalc)
+            if(deepks_v_delta):
+                hcs=np.load(f"{sys_test_paths[i]}/ABACUS/{f}/h_base.npy")
+                h0_list.append(hcs/2)      
+                hcs=np.load(f"{sys_test_paths[i]}/ABACUS/{f}/h_tot.npy")
+                h_list.append(hcs/2)
+                if os.path.exists(f"{sys_test_paths[i]}/ABACUS/{f}/v_delta_precalc.npy"):
+                    v_delta_precalc=np.load(f"{sys_test_paths[i]}/ABACUS/{f}/v_delta_precalc.npy")
+                    vdp_list.append(v_delta_precalc)   
         dm_eig=np.array(d_list)   #concatenate
         np.save(f"{test_dump}/{sys_test_names[i]}/dm_eig.npy", dm_eig)
         e_base=np.array(e0_list)
@@ -566,6 +598,15 @@ def gather_stats_abacus(systems_train, systems_test,
             np.save(f"{test_dump}/{sys_test_names[i]}/o_tot.npy", np.array(o_list))
             if len(op_list) > 0:
                 np.save(f"{test_dump}/{sys_test_names[i]}/orbital_precalc.npy", np.array(op_list))
+        if(deepks_v_delta): 
+            h_base=np.array(h0_list)
+            np.save(f"{test_dump}/{sys_test_names[i]}/h_base.npy", h_base)
+            h_ref=np.load(f"{sys_test_paths[i]}/hamitonian.npy")
+            np.save(f"{test_dump}/{sys_test_names[i]}/hamitonian.npy", h_ref)
+            np.save(f"{test_dump}/{sys_test_names[i]}/l_h_delta.npy", h_ref-h_base)
+            np.save(f"{test_dump}/{sys_test_names[i]}/h_tot.npy", np.array(h_list))
+            if len(vdp_list) > 0:
+                np.save(f"{test_dump}/{sys_test_names[i]}/v_delta_precalc.npy", np.array(vdp_list))
         np.save(f"{test_dump}/{sys_test_names[i]}/conv.npy",c_list)
     #check convergence and print in log
     from deepks.scf.stats import print_stats
@@ -577,7 +618,7 @@ def gather_stats_abacus(systems_train, systems_test,
 
 
 def make_stat_scf_abacus(systems_train, systems_test=None, *, 
-                  train_dump="data_train", test_dump="data_test", cal_force=0, cal_stress=0, deepks_bandgap=0,
+                  train_dump="data_train", test_dump="data_test", cal_force=0, cal_stress=0, deepks_bandgap=0, deepks_v_delta=0,
                   workdir='.', outlog="log.data", **stat_args):
     # follow same convention for systems as run_scf
     systems_train = [os.path.abspath(s) for s in load_sys_paths(systems_train)]
@@ -594,7 +635,8 @@ def make_stat_scf_abacus(systems_train, systems_test=None, *,
         test_dump=test_dump,
         cal_force=cal_force,
         cal_stress=cal_stress,
-        deepks_bandgap=deepks_bandgap)
+        deepks_bandgap=deepks_bandgap,
+        deepks_v_delta=deepks_v_delta)
     # make task
     return PythonTask(
         gather_stats_abacus,
