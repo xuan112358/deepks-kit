@@ -172,7 +172,7 @@ def convert_data(systems_train, systems_test=None, *,
             cell_data = np.load(f"{sys_paths[i]}/box.npy")
         nframes = atom_data.shape[0]
         natoms = atom_data.shape[1]
-        atoms = atom_data[1,:,0]
+        atoms = atom_data[0,:,0] # if use atom_data[1,:,0], will need at least two frames
         #atoms.sort() # type order
         types = np.unique(atoms) #index in type list
         ntype = types.size

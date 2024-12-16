@@ -134,6 +134,7 @@ L2LOSS = make_loss(cap=None, shrink=None, reduction="mean")
 def cal_psi_loss(psi_pred,psi_label,psi_occ):
     occ_psi_pred=psi_pred[...,:psi_occ].clone()
     occ_psi_label=psi_label[...,:psi_occ].clone()
+    print("occ_psi.shape",occ_psi_pred.shape,occ_psi_label.shape)
     # just mean reduction
     loss_1=((occ_psi_label-occ_psi_pred)**2).mean(-2) # mean for every component of each psi
     loss_2=((occ_psi_label-(-1)*occ_psi_pred)**2).mean(-2)
@@ -165,7 +166,7 @@ class Evaluator:
                  stress_lossfn=None, orbital_lossfn=None,
                  v_delta_lossfn=None, psi_lossfn=None,
                  band_lossfn=None,
-                 energy_per_atom=0,):
+                 energy_per_atom=0,vd_divide_by_nlocal=False):
         # energy term
         if energy_lossfn is None:
             energy_lossfn = {}
@@ -201,6 +202,7 @@ class Evaluator:
             v_delta_lossfn = make_loss(**v_delta_lossfn)
         self.vd_factor = v_delta_factor
         self.vd_lossfn = v_delta_lossfn
+        self.vd_divide_by_nlocal = vd_divide_by_nlocal
         # psi term
         if psi_lossfn is None:
             psi_lossfn = {}
@@ -290,8 +292,13 @@ class Evaluator:
                 # optional v_delta calculation
                 if self.vd_factor > 0 and "lb_vd" in sample:
                     vd_label = sample["lb_vd"]
-                    tot_loss = tot_loss + self.vd_factor * self.vd_lossfn(vd_pred, vd_label)
-                    loss.append(self.vd_factor * self.vd_lossfn(vd_pred, vd_label))
+                    vd_loss = self.vd_factor * self.vd_lossfn(vd_pred, vd_label)
+                    # original: mean method,divide by nlocal**2. vd_divide_by_nlocal:divide by nlocal
+                    if self.vd_divide_by_nlocal:
+                        nlocal = vd_label.shape[-1]
+                        vd_loss = vd_loss * nlocal
+                    tot_loss = tot_loss + vd_loss
+                    loss.append(vd_loss)
                 
                 if (self.psi_factor > 0 and "lb_psi" in sample) or (self.band_factor > 0 and "lb_band" in sample):
                     h_base = sample["h_base"]
@@ -312,6 +319,7 @@ class Evaluator:
                         band_occ=self.get_band_occ(natom)
                         band_loss = self.band_factor * self.band_lossfn(band_pred[...,:band_occ], band_label[...,:band_occ])
                         tot_loss = tot_loss + band_loss
+                        print("occ_band",band_pred[...,:band_occ],band_label[...,:band_occ])
                         loss.append(band_loss)
             # density loss with fix head grad
             if self.d_factor > 0 and "gldv" in sample:
@@ -386,7 +394,7 @@ class NatomLossList:
 def train(model, g_reader, n_epoch=1000, test_reader=None, *,
           energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., psi_factor=0.,psi_occ=0, band_factor=0.,band_occ=0,density_factor=0.,
           energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, band_loss=None, grad_penalty=0.,
-          energy_per_atom=0,
+          energy_per_atom=0, vd_divide_by_nlocal=False,
           start_lr=0.001, decay_steps=100, decay_rate=0.96, stop_lr=None,
           weight_decay=0.,  fix_embedding=False,
           display_epoch=100, display_detail_test=0, display_natom_loss=False, ckpt_file="model.pth",
@@ -417,7 +425,8 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                           stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
                           v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
                           band_lossfn=band_loss,
-                          density_factor=density_factor, grad_penalty=grad_penalty, energy_per_atom=energy_per_atom)
+                          density_factor=density_factor, grad_penalty=grad_penalty, 
+                          energy_per_atom=energy_per_atom, vd_divide_by_nlocal=vd_divide_by_nlocal)
     if not display_detail_test:
         # make test evaluator that only returns l2loss of energy
         test_eval = Evaluator(energy_factor=1., energy_lossfn=L2LOSS, 
@@ -434,7 +443,8 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                             stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
                             v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
                             band_lossfn=band_loss,
-                            density_factor=to_one(density_factor), grad_penalty=grad_penalty,energy_per_atom=energy_per_atom)
+                            density_factor=to_one(density_factor), grad_penalty=grad_penalty,
+                            energy_per_atom=energy_per_atom, vd_divide_by_nlocal=vd_divide_by_nlocal)
 
     print("# epoch      trn_err   tst_err        lr  trn_time  tst_time",end='')
     data_keys = g_reader.readers[0].sample_all().keys()
