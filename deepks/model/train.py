@@ -105,6 +105,20 @@ def cal_v_delta(gev,gevdm,psialpha):
     # print("v_delta.shape",v_delta.shape)
     return v_delta
 
+def get_density_matrix(psi,density_m_occ):
+    psi_occ=psi[...,:density_m_occ]
+    batch_size,nks,nlocal,nocc=psi_occ.size()
+    psi_occ=psi_occ.view(batch_size*nks,nlocal,nocc)
+
+    #batch matrix multiplication, psi_occ@psi_occ.T
+    density_m = torch.bmm(psi_occ, psi_occ.transpose(-1,-2))
+
+    #reshape to batch_size,nks,nlocal,nlocal
+    density_m=density_m.view(batch_size,nks,nlocal,nlocal)
+    psi_occ=psi_occ.view(batch_size,nks,nlocal,nocc)
+
+    return density_m
+
 def make_loss(cap=None, shrink=None, reduction="mean"):
     def loss_fn(input, target):
         diff = target - input
@@ -134,7 +148,7 @@ L2LOSS = make_loss(cap=None, shrink=None, reduction="mean")
 def cal_psi_loss(psi_pred,psi_label,psi_occ):
     occ_psi_pred=psi_pred[...,:psi_occ].clone()
     occ_psi_label=psi_label[...,:psi_occ].clone()
-    print("occ_psi.shape",occ_psi_pred.shape,occ_psi_label.shape)
+    # print("occ_psi.shape",occ_psi_pred.shape,occ_psi_label.shape)
     # just mean reduction
     loss_1=((occ_psi_label-occ_psi_pred)**2).mean(-2) # mean for every component of each psi
     loss_2=((occ_psi_label-(-1)*occ_psi_pred)**2).mean(-2)
@@ -145,6 +159,7 @@ def cal_psi_loss(psi_pred,psi_label,psi_occ):
     return loss
 
 def get_occ_func(occ):
+    # print("type:",type(occ))
     if isinstance(occ, int):
         def get_occ(natom):
             return occ  
@@ -161,11 +176,12 @@ class Evaluator:
                  v_delta_factor=0., 
                  psi_factor=0., psi_occ=0,
                  band_factor=0.,band_occ=0,
+                 density_m_factor=0.,density_m_occ=0,
                  density_factor=0., grad_penalty=0., 
                  energy_lossfn=None, force_lossfn=None, 
                  stress_lossfn=None, orbital_lossfn=None,
                  v_delta_lossfn=None, psi_lossfn=None,
-                 band_lossfn=None,
+                 band_lossfn=None, density_m_lossfn=None,
                  energy_per_atom=0,vd_divide_by_nlocal=False):
         # energy term
         if energy_lossfn is None:
@@ -218,7 +234,15 @@ class Evaluator:
             band_lossfn = make_loss(**band_lossfn)
         self.band_factor = band_factor
         self.band_lossfn = band_lossfn   
-        self.get_band_occ = get_occ_func(band_occ)                   
+        self.get_band_occ = get_occ_func(band_occ)   
+        #density matrix term
+        if density_m_lossfn is None:
+            density_m_lossfn = {}
+        if isinstance(density_m_lossfn, dict):
+            density_m_lossfn = make_loss(**density_m_lossfn)
+        self.density_m_factor = density_m_factor
+        self.density_m_lossfn = density_m_lossfn   
+        self.get_density_m_occ = get_occ_func(density_m_occ)                  
         # coulomb term of dm; requires head gradient
         self.d_factor = density_factor
         # gradient penalty, not very useful
@@ -241,6 +265,7 @@ class Evaluator:
                         or (self.vd_factor > 0 and "lb_vd" in sample)
                         or (self.psi_factor > 0 and "lb_psi" in sample)
                         or (self.band_factor > 0 and "lb_band" in sample)
+                        or (self.density_m_factor > 0)
                         or (self.d_factor > 0 and "gldv" in sample)
                         or self.g_penalty > 0)
         eig.requires_grad_(requires_grad)
@@ -278,7 +303,8 @@ class Evaluator:
                 o_pred = torch.einsum("...iap,...ap->...i", op, gev)
                 tot_loss = tot_loss + self.o_factor * self.o_lossfn(o_pred, o_label)
                 loss.append(self.o_factor * self.o_lossfn(o_pred, o_label))
-            if (self.vd_factor > 0 and "lb_vd" in sample) or (self.psi_factor > 0 and "lb_psi" in sample) or (self.band_factor > 0 and "lb_band" in sample):
+            if (self.vd_factor > 0 and "lb_vd" in sample) or (self.psi_factor > 0 and "lb_psi" in sample) \
+                or (self.band_factor > 0 and "lb_band" in sample) or (self.density_m_factor > 0 and "lb_psi" in sample):
                 # cal v_delta
                 if "vdp" in sample:
                     vdp = sample["vdp"]
@@ -288,19 +314,19 @@ class Evaluator:
                     vd_pred = cal_v_delta(gev,sample["gevdm"],sample["psialpha"])
                     # end=time()
                     # print("cal vdp time in batch:",end-start)
-                
+                nlocal = vd_pred.shape[-1]
+
                 # optional v_delta calculation
                 if self.vd_factor > 0 and "lb_vd" in sample:
                     vd_label = sample["lb_vd"]
                     vd_loss = self.vd_factor * self.vd_lossfn(vd_pred, vd_label)
                     # original: mean method,divide by nlocal**2. vd_divide_by_nlocal:divide by nlocal
                     if self.vd_divide_by_nlocal:
-                        nlocal = vd_label.shape[-1]
                         vd_loss = vd_loss * nlocal
                     tot_loss = tot_loss + vd_loss
                     loss.append(vd_loss)
                 
-                if (self.psi_factor > 0 and "lb_psi" in sample) or (self.band_factor > 0 and "lb_band" in sample):
+                if (self.psi_factor > 0 and "lb_psi" in sample) or (self.band_factor > 0 and "lb_band" in sample) or (self.density_m_factor > 0 and "lb_psi" in sample):
                     h_base = sample["h_base"]
                     if "L_inv" in sample:
                         L_inv=sample["L_inv"]
@@ -319,8 +345,19 @@ class Evaluator:
                         band_occ=self.get_band_occ(natom)
                         band_loss = self.band_factor * self.band_lossfn(band_pred[...,:band_occ], band_label[...,:band_occ])
                         tot_loss = tot_loss + band_loss
-                        print("occ_band",band_pred[...,:band_occ],band_label[...,:band_occ])
+                        # print("occ_band",band_pred[...,:band_occ],band_label[...,:band_occ])
                         loss.append(band_loss)
+                    # optional density matrix calculation
+                    if self.density_m_factor > 0 and "lb_psi" in sample:
+                        # calculate density_m_label every time, kind of waste of time
+                        psi_label = sample["lb_psi"]
+                        density_m_occ=self.get_density_m_occ(natom)
+                        density_m_label = get_density_matrix(psi_label,density_m_occ)
+                        density_m_pred = get_density_matrix(psi_pred,density_m_occ)
+                        #need to multiply nlocal, reason is the same as v_delta
+                        density_m_loss = self.density_m_factor * self.density_m_lossfn(density_m_pred, density_m_label) * nlocal
+                        tot_loss = tot_loss + density_m_loss
+                        loss.append(density_m_loss)
             # density loss with fix head grad
             if self.d_factor > 0 and "gldv" in sample:
                 gldv = sample["gldv"]
@@ -351,7 +388,10 @@ class Evaluator:
             info+=f"{name}_psi".rjust(len)
         # optional band energy calculation
         if self.band_factor > 0 and "lb_band" in data_keys:
-            info+=f"{name}_band".rjust(len)            
+            info+=f"{name}_band".rjust(len)
+        # optional density matrix calculation
+        if self.density_m_factor > 0 and "lb_psi" in data_keys:
+            info+=f"{name}_dm".rjust(len)             
         # density loss with fix head grad
         if self.d_factor > 0 and "gldv" in data_keys:
             info+=f"{name}_density".rjust(len)
@@ -392,8 +432,8 @@ class NatomLossList:
         return np.mean([loss for losses in self.natom_loss_list.values() for loss in losses ],axis=0)
 
 def train(model, g_reader, n_epoch=1000, test_reader=None, *,
-          energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., psi_factor=0.,psi_occ=0, band_factor=0.,band_occ=0,density_factor=0.,
-          energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, band_loss=None, grad_penalty=0.,
+          energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., psi_factor=0.,psi_occ=0, band_factor=0., band_occ=0, density_m_factor=0., density_m_occ=0, density_factor=0.,
+          energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, band_loss=None, density_m_loss=None, grad_penalty=0.,
           energy_per_atom=0, vd_divide_by_nlocal=False,
           start_lr=0.001, decay_steps=100, decay_rate=0.96, stop_lr=None,
           weight_decay=0.,  fix_embedding=False,
@@ -421,10 +461,11 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                           v_delta_factor=v_delta_factor,
                           psi_factor=psi_factor, psi_occ=psi_occ,
                           band_factor=band_factor, band_occ=band_occ,
+                          density_m_factor=density_m_factor, density_m_occ=density_m_occ,
                           energy_lossfn=energy_loss, force_lossfn=force_loss,
                           stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
                           v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
-                          band_lossfn=band_loss,
+                          band_lossfn=band_loss, density_m_lossfn=density_m_loss,
                           density_factor=density_factor, grad_penalty=grad_penalty, 
                           energy_per_atom=energy_per_atom, vd_divide_by_nlocal=vd_divide_by_nlocal)
     if not display_detail_test:
@@ -439,10 +480,11 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                             v_delta_factor=to_one(v_delta_factor),
                             psi_factor=to_one(psi_factor), psi_occ=psi_occ,
                             band_factor=to_one(band_factor), band_occ=band_occ,
+                            density_m_factor=to_one(density_m_factor), density_m_occ=density_m_occ,
                             energy_lossfn=energy_loss, force_lossfn=force_loss,
                             stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
                             v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
-                            band_lossfn=band_loss,
+                            band_lossfn=band_loss, density_m_lossfn=density_m_loss,
                             density_factor=to_one(density_factor), grad_penalty=grad_penalty,
                             energy_per_atom=energy_per_atom, vd_divide_by_nlocal=vd_divide_by_nlocal)
 

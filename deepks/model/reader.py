@@ -26,6 +26,7 @@ def generalized_eigh(h,L_inv):
     psi=L_inv.mT @ v 
     return e,psi
 
+#not used now
 def cal_vdp(psialpha,gevdm):
     # process = psutil.Process(os.getpid())
     # before_memory_usage = process.memory_info().rss
