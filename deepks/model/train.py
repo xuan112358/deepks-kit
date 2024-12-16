@@ -19,7 +19,7 @@ from deepks.utils import load_dirs, load_elem_table
 
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-#DEVICE = torch.device("cpu")
+# DEVICE = torch.device("cpu")
 
 
 def fit_elem_const(g_reader, test_reader=None, elem_table=None, ridge_alpha=0.):
@@ -331,7 +331,7 @@ class Evaluator:
         # density loss with fix head grad
         if self.d_factor > 0 and "gldv" in data_keys:
             info+=f"{name}_density".rjust(len)
-        print(info)
+        print(info,end='')
 
 
 def train(model, g_reader, n_epoch=1000, test_reader=None, *,
@@ -339,7 +339,7 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
           energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, band_loss=None, grad_penalty=0.,
           start_lr=0.001, decay_steps=100, decay_rate=0.96, stop_lr=None,
           weight_decay=0.,  fix_embedding=False,
-          display_epoch=100, ckpt_file="model.pth",
+          display_epoch=100, display_detail_test=0, ckpt_file="model.pth",
           graph_file=None, device=DEVICE):
     
     model = model.to(device)
@@ -368,15 +368,33 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                           v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
                           band_lossfn=band_loss,
                           density_factor=density_factor, grad_penalty=grad_penalty)
-    # make test evaluator that only returns l2loss of energy
-    test_eval = Evaluator(energy_factor=1., energy_lossfn=L2LOSS, 
-                          force_factor=0., density_factor=0., grad_penalty=0.)
+    if not display_detail_test:
+        # make test evaluator that only returns l2loss of energy
+        test_eval = Evaluator(energy_factor=1., energy_lossfn=L2LOSS, 
+                            force_factor=0., density_factor=0., grad_penalty=0.)
+    else:
+        # make test evaluator that returns loss of every concerned items, but all with factor==1
+        to_one = lambda x: 0. if x == 0. else 1.
+        test_eval = Evaluator(energy_factor=to_one(energy_factor), force_factor=to_one(force_factor), 
+                            stress_factor=to_one(stress_factor), orbital_factor=to_one(orbital_factor),
+                            v_delta_factor=to_one(v_delta_factor),
+                            psi_factor=to_one(psi_factor), psi_occ=psi_occ,
+                            band_factor=to_one(band_factor), band_occ=band_occ,
+                            energy_lossfn=energy_loss, force_lossfn=force_loss,
+                            stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
+                            v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
+                            band_lossfn=band_loss,
+                            density_factor=to_one(density_factor), grad_penalty=grad_penalty)
 
     print("# epoch      trn_err   tst_err        lr  trn_time  tst_time",end='')
     data_keys = g_reader.readers[0].sample_all().keys()
     # L_inv_in=1 if "L_inv" in data_keys else 0
     # print("if L_inv in sample:",L_inv_in)
     evaluator.print_head("trn_loss",data_keys)
+    if display_detail_test:
+        test_eval.print_head("tst_loss",data_keys)
+    print("")
+    
     tic = time()
     trn_loss = np.mean([[loss_term.item() for loss_term in evaluator(model, batch)]
                     for batch in g_reader.sample_all_batch()],axis=0)
@@ -387,6 +405,9 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
           f"  {start_lr:>.2e}  {0:>8.2f}  {tst_time:>8.2f}",end='')
     for loss_term in trn_loss[:-1]:
         print(f"{loss_term:>18.4e}",end='')
+    if display_detail_test:
+        for loss_term in tst_loss[:-1]:
+            print(f"{loss_term:>18.4e}",end='')
     print('')
 
     for epoch in range(1, n_epoch+1):
@@ -413,6 +434,9 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                   f"  {scheduler.get_last_lr()[0]:>.2e}  {trn_time:>8.2f}  {tst_time:8.2f}",end='')
             for loss_term in trn_loss[:-1]:
                 print(f"{loss_term:>18.4e}",end='')
+            if display_detail_test and epoch%(display_detail_test*display_epoch) == 0:
+                for loss_term in tst_loss[:-1]:
+                    print(f"{loss_term:>18.4e}",end='')               
             print('')
             if ckpt_file:
                 model.save(ckpt_file)
