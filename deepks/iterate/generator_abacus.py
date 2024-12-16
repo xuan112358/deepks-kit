@@ -84,7 +84,7 @@ def make_abacus_scf_input(fp_params):
         assert(fp_params["deepks_bandgap"] == 0  or fp_params["deepks_bandgap"] == 1), "'deepks_bandgap' should be either 0 or 1."
         ret += "deepks_bandgap %d\n" % fp_params["deepks_bandgap"]
     if "deepks_v_delta" in fp_params:
-        assert(fp_params["deepks_v_delta"] == 0  or fp_params["deepks_v_delta"] == 1), "'deepks_v_delta' should be either 0 or 1."
+        assert(fp_params["deepks_v_delta"] == 0  or fp_params["deepks_v_delta"] == 1 or fp_params["deepks_v_delta"] == 2), "'deepks_v_delta' should be either 0/1/2."
         ret += "deepks_v_delta %d\n" % fp_params["deepks_v_delta"]
     if "model_file" in fp_params:
         ret += "deepks_model %s\n" % fp_params["model_file"]

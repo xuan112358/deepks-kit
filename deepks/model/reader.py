@@ -26,6 +26,26 @@ def generalized_eigh(h,L_inv):
     psi=L_inv.mT @ v 
     return e,psi
 
+def cal_vdp(psialpha,gevdm):
+    v_delta_pdm_shell=torch.einsum("...xam,...yan->...xyamn",psialpha,psialpha)
+
+    v_delta_precalc=torch.einsum("...kxyamn,...avmn->...kxyav",v_delta_pdm_shell,gevdm)
+
+    #reshape v_delta_precalc
+    mmax=v_delta_precalc.size(-1)
+    lmax=int((mmax-1)/2)
+    n=int(v_delta_precalc.size(1)/(lmax+1))
+
+    vdp_vector=[]
+    for l in range(lmax+1):
+        ll=v_delta_precalc[:,n*l:n*(l+1),...,:2*l+1]
+        ll=ll.permute(0,2,3,4,5,1,6)
+        ll=ll.flatten(start_dim=-2)
+        vdp_vector.append(ll)
+    vdp=torch.cat(vdp_vector,dim=-1)
+
+    return vdp
+
 class Reader(object):
     def __init__(self, data_path, batch_size, 
                  e_name="l_e_delta", d_name="dm_eig", 
@@ -33,6 +53,7 @@ class Reader(object):
                  s_name="l_s_delta", gvepsl_name="grad_vepsl", 
                  o_name="l_o_delta", op_name="orbital_precalc",
                  h_name="l_h_delta", vdp_name="v_delta_precalc",
+                 psialpha_name="psialpha",gevdm_name="grad_evdm",
                  h_base_name="h_base",h_ref_name="hamiltonian",
                  read_overlap = False, overlap_name="overlap",
                  eg_name="eg_base", gveg_name="grad_veg", 
@@ -48,6 +69,8 @@ class Reader(object):
         self.h_base_path=self.check_exist(h_base_name+".npy")
         self.h_ref_path=self.check_exist(h_ref_name+".npy")
         self.overlap_path=self.check_exist(overlap_name+".npy")
+        self.psialpha_path=self.check_exist(psialpha_name+".npy")
+        self.gevdm_path=self.check_exist(gevdm_name+".npy")
         self.d_path = self.check_exist(d_name+".npy")
         self.gvx_path = self.check_exist(gvx_name+".npy")
         self.gvepsl_path = self.check_exist(gvepsl_name+".npy")
@@ -133,7 +156,7 @@ class Reader(object):
             self.t_data["op"] = torch.tensor(
                 np.load(self.op_path)\
                     .reshape(raw_nframes, -1, self.natm, self.ndesc)[conv])
-        if self.h_path is not None and self.vdp_path is not None:
+        if self.h_path is not None and (self.vdp_path is not None or (self.psialpha_path is not None and self.gevdm_path is not None)):
             h_shape = np.load(self.h_path).shape
             assert h_shape[-1] == h_shape[-2], \
                 f"The last two dimension of H must have the same size , which is nlocal"
@@ -141,9 +164,22 @@ class Reader(object):
             self.t_data["lb_vd"] = torch.tensor(
                 np.load(self.h_path)\
                   .reshape(raw_nframes, -1, self.nlocal, self.nlocal)[conv]) #-1 for nks
-            self.t_data["vdp"] = torch.tensor(
-                np.load(self.vdp_path)\
-                    .reshape(raw_nframes, -1, self.nlocal, self.nlocal, self.natm, self.ndesc)[conv])
+            if self.vdp_path is not None and (self.psialpha_path is not None and self.gevdm_path is not None): #both file exist, choose newer ones
+                if os.path.getmtime(self.vdp_path) >= os.path.getmtime(self.psialpha_path):#psialpha and gevdm modified at the same time
+                    self.psialpha_path=None
+                    self.gevdm_path=None
+                else:
+                    self.vdp_path=None
+            if self.vdp_path is not None:
+                self.t_data["vdp"] = torch.tensor(
+                    np.load(self.vdp_path)\
+                        .reshape(raw_nframes, -1, self.nlocal, self.nlocal, self.natm, self.ndesc)[conv])
+            elif self.psialpha_path is not None and self.gevdm_path is not None:
+                psialpha=torch.tensor(np.load(self.psialpha_path))
+                gevdm=torch.tensor(np.load(self.gevdm_path))
+                vdp=cal_vdp(psialpha,gevdm)
+                self.t_data["vdp"] = vdp\
+                        .reshape(raw_nframes, -1, self.nlocal, self.nlocal, self.natm, self.ndesc)[conv].clone()
             #for psi labels
             self.t_data["h_base"]=torch.tensor(
                 np.load(self.h_base_path)\

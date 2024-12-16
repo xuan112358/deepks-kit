@@ -154,8 +154,8 @@ class Evaluator:
 
     def __call__(self, model, sample):
         _dref = next(model.parameters())
-        print("_dref:")
-        print(_dref)
+        #print("_dref:")
+        #print(_dref)
         tot_loss = 0.
         loss=[]
         sample = {k: v.to(_dref, non_blocking=True) for k, v in sample.items()}
