@@ -154,7 +154,8 @@ class Evaluator:
                  energy_lossfn=None, force_lossfn=None, 
                  stress_lossfn=None, orbital_lossfn=None,
                  v_delta_lossfn=None, psi_lossfn=None,
-                 band_lossfn=None):
+                 band_lossfn=None,
+                 energy_per_atom=0,):
         # energy term
         if energy_lossfn is None:
             energy_lossfn = {}
@@ -210,6 +211,8 @@ class Evaluator:
         self.d_factor = density_factor
         # gradient penalty, not very useful
         self.g_penalty = grad_penalty
+        # energy loss divide by 1/natom/natom^2
+        self.energy_per_atom=energy_per_atom
 
     def __call__(self, model, sample):
         _dref = next(model.parameters())
@@ -231,8 +234,10 @@ class Evaluator:
         eig.requires_grad_(requires_grad)
         # begin the calculation
         e_pred = model(eig)
-        tot_loss = tot_loss + self.e_factor * self.e_lossfn(e_pred, e_label)
-        loss.append(self.e_factor * self.e_lossfn(e_pred, e_label))
+        # may divide e_loss by 1 or natom or natom**2: this way energy loss will not increase when number of atom increase
+        natom = eig.shape[1]
+        tot_loss = tot_loss + self.e_factor * self.e_lossfn(e_pred, e_label) / (natom**self.energy_per_atom)
+        loss.append(self.e_factor * self.e_lossfn(e_pred, e_label) / (natom**self.energy_per_atom))
         if requires_grad:
             [gev] = torch.autograd.grad(e_pred, eig, 
                         grad_outputs=torch.ones_like(e_pred),
@@ -370,6 +375,7 @@ class NatomLossList:
 def train(model, g_reader, n_epoch=1000, test_reader=None, *,
           energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., psi_factor=0.,psi_occ=0, band_factor=0.,band_occ=0,density_factor=0.,
           energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, band_loss=None, grad_penalty=0.,
+          energy_per_atom=0,
           start_lr=0.001, decay_steps=100, decay_rate=0.96, stop_lr=None,
           weight_decay=0.,  fix_embedding=False,
           display_epoch=100, display_detail_test=0, display_natom_loss=False, ckpt_file="model.pth",
@@ -400,11 +406,11 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                           stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
                           v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
                           band_lossfn=band_loss,
-                          density_factor=density_factor, grad_penalty=grad_penalty)
+                          density_factor=density_factor, grad_penalty=grad_penalty, energy_per_atom=energy_per_atom)
     if not display_detail_test:
         # make test evaluator that only returns l2loss of energy
         test_eval = Evaluator(energy_factor=1., energy_lossfn=L2LOSS, 
-                            force_factor=0., density_factor=0., grad_penalty=0.)
+                            force_factor=0., density_factor=0., grad_penalty=0.,energy_per_atom=energy_per_atom)
     else:
         # make test evaluator that returns loss of every concerned items, but all with factor==1
         to_one = lambda x: 0. if x == 0. else 1.
@@ -417,7 +423,7 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                             stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
                             v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
                             band_lossfn=band_loss,
-                            density_factor=to_one(density_factor), grad_penalty=grad_penalty)
+                            density_factor=to_one(density_factor), grad_penalty=grad_penalty,energy_per_atom=energy_per_atom)
 
     print("# epoch      trn_err   tst_err        lr  trn_time  tst_time",end='')
     data_keys = g_reader.readers[0].sample_all().keys()
