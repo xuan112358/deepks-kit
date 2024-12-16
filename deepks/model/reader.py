@@ -20,6 +20,11 @@ def split_batch(tdict, size, dim=0):
         for i in range(nsecs[0])
     ]
 
+def generalized_eigh(h,L_inv):
+    symm_h=L_inv @ h @ L_inv.mT
+    e,v=torch.linalg.eigh(symm_h)
+    psi=L_inv.mT @ v 
+    return e,psi
 
 class Reader(object):
     def __init__(self, data_path, batch_size, 
@@ -28,6 +33,8 @@ class Reader(object):
                  s_name="l_s_delta", gvepsl_name="grad_vepsl", 
                  o_name="l_o_delta", op_name="orbital_precalc",
                  h_name="l_h_delta", vdp_name="v_delta_precalc",
+                 h_base_name="h_base",h_ref_name="hamiltonian",
+                 read_overlap = False, overlap_name="overlap",
                  eg_name="eg_base", gveg_name="grad_veg", 
                  gldv_name="grad_ldv", conv_name="conv", 
                  atom_name="atom", **kwargs):
@@ -38,6 +45,9 @@ class Reader(object):
         self.s_path = self.check_exist(s_name+".npy")
         self.o_path = self.check_exist(o_name+".npy")
         self.h_path = self.check_exist(h_name+".npy")
+        self.h_base_path=self.check_exist(h_base_name+".npy")
+        self.h_ref_path=self.check_exist(h_ref_name+".npy")
+        self.overlap_path=self.check_exist(overlap_name+".npy")
         self.d_path = self.check_exist(d_name+".npy")
         self.gvx_path = self.check_exist(gvx_name+".npy")
         self.gvepsl_path = self.check_exist(gvepsl_name+".npy")
@@ -48,6 +58,7 @@ class Reader(object):
         self.gldv_path = self.check_exist(gldv_name+".npy")
         self.c_path = self.check_exist(conv_name+".npy")
         self.a_path = self.check_exist(atom_name+".npy")
+        self.read_overlap=read_overlap
         # load data
         self.load_meta()
         self.prepare()
@@ -133,6 +144,23 @@ class Reader(object):
             self.t_data["vdp"] = torch.tensor(
                 np.load(self.vdp_path)\
                     .reshape(raw_nframes, -1, self.nlocal, self.nlocal, self.natm, self.ndesc)[conv])
+            #for psi labels
+            self.t_data["h_base"]=torch.tensor(
+                np.load(self.h_base_path)\
+                  .reshape(raw_nframes, -1, self.nlocal, self.nlocal)[conv]) #-1 for nks
+            h_ref=torch.tensor(np.load(self.h_ref_path))
+            if self.read_overlap is True and self.overlap_path is not None:
+                #print("use generalized eigh")
+                overlap=torch.tensor(np.load(self.overlap_path))
+                L=torch.linalg.cholesky(overlap)
+                L_inv=torch.linalg.inv(L)
+                self.t_data["L_inv"]=L_inv\
+                        .reshape(raw_nframes, -1, self.nlocal, self.nlocal)[conv].clone()  
+                band_ref,psi_ref=generalized_eigh(h_ref,L_inv)    
+            else:
+                band_ref,psi_ref=torch.linalg.eigh(h_ref,UPLO='U')
+            self.t_data["lb_psi"]=psi_ref\
+                  .reshape(raw_nframes, -1, self.nlocal, self.nlocal)[conv].clone()      
         if self.eg_path is not None and self.gveg_path is not None:
             self.t_data['eg0'] = torch.tensor(
                 np.load(self.eg_path)\

@@ -489,12 +489,15 @@ def gather_stats_abacus(systems_train, systems_test,
         if(deepks_v_delta): 
             h_base=np.array(h0_list)
             np.save(f"{train_dump}/{sys_train_names[i]}/h_base.npy", h_base)
-            h_ref=np.load(f"{sys_train_paths[i]}/hamitonian.npy")
-            np.save(f"{train_dump}/{sys_train_names[i]}/hamitonian.npy", h_ref)
+            h_ref=np.load(f"{sys_train_paths[i]}/hamiltonian.npy")
+            np.save(f"{train_dump}/{sys_train_names[i]}/hamiltonian.npy", h_ref)
             np.save(f"{train_dump}/{sys_train_names[i]}/l_h_delta.npy", h_ref-h_base)
             np.save(f"{train_dump}/{sys_train_names[i]}/h_tot.npy", np.array(h_list))
             if len(vdp_list) > 0:
                 np.save(f"{train_dump}/{sys_train_names[i]}/v_delta_precalc.npy", np.array(vdp_list))
+            if os.path.exists(f"{sys_train_paths[i]}/overlap.npy"):
+                overlap=np.load(f"{sys_train_paths[i]}/overlap.npy")
+                np.save(f"{train_dump}/{sys_train_names[i]}/overlap.npy", overlap)
     #concatenate data (test)
     if not os.path.exists(test_dump):
             os.mkdir(test_dump)
@@ -601,12 +604,15 @@ def gather_stats_abacus(systems_train, systems_test,
         if(deepks_v_delta): 
             h_base=np.array(h0_list)
             np.save(f"{test_dump}/{sys_test_names[i]}/h_base.npy", h_base)
-            h_ref=np.load(f"{sys_test_paths[i]}/hamitonian.npy")
-            np.save(f"{test_dump}/{sys_test_names[i]}/hamitonian.npy", h_ref)
+            h_ref=np.load(f"{sys_test_paths[i]}/hamiltonian.npy")
+            np.save(f"{test_dump}/{sys_test_names[i]}/hamiltonian.npy", h_ref)
             np.save(f"{test_dump}/{sys_test_names[i]}/l_h_delta.npy", h_ref-h_base)
             np.save(f"{test_dump}/{sys_test_names[i]}/h_tot.npy", np.array(h_list))
             if len(vdp_list) > 0:
                 np.save(f"{test_dump}/{sys_test_names[i]}/v_delta_precalc.npy", np.array(vdp_list))
+            if os.path.exists(f"{sys_test_paths[i]}/overlap.npy"):
+                overlap=np.load(f"{sys_test_paths[i]}/overlap.npy")
+                np.save(f"{test_dump}/{sys_test_names[i]}/overlap.npy", overlap)
         np.save(f"{test_dump}/{sys_test_names[i]}/conv.npy",c_list)
     #check convergence and print in log
     from deepks.scf.stats import print_stats

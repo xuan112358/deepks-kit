@@ -13,6 +13,7 @@ except ImportError as e:
     sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/../../")
 from deepks.model.model import CorrNet
 from deepks.model.reader import GroupReader
+from deepks.model.reader import generalized_eigh
 from deepks.utils import load_dirs, load_elem_table
 
 
@@ -80,16 +81,29 @@ def make_loss(cap=None, shrink=None, reduction="mean"):
 # equiv to nn.MSELoss()
 L2LOSS = make_loss(cap=None, shrink=None, reduction="mean")
 
+# use every psi_pred and -1*psi_pred to compare with corresponding psi_label, given that psi can have coeficient freedom of +-1 (for gamma only)
+def cal_psi_loss(psi_pred,psi_label,psi_occ):
+    occ_psi_pred=psi_pred[...,:psi_occ].clone()
+    occ_psi_label=psi_label[...,:psi_occ].clone()
+    # just mean reduction
+    loss_1=((occ_psi_label-occ_psi_pred)**2).mean(-2) # mean for every component of each psi
+    loss_2=((occ_psi_label-(-1)*occ_psi_pred)**2).mean(-2)
+    loss=torch.stack([loss_1,loss_2],dim=-1)
+    loss=loss.min(dim=-1)[0] # pick min for every psi
+    loss=loss.mean()
+    #print("loss.shape:",loss.shape)
+    return loss
 
 class Evaluator:
     def __init__(self,
                  energy_factor=1., force_factor=0., 
                  stress_factor=0., orbital_factor=0.,
-                 v_delta_factor=0.,
+                 v_delta_factor=0., 
+                 psi_factor=0., psi_occ=0,
                  density_factor=0., grad_penalty=0., 
                  energy_lossfn=None, force_lossfn=None, 
                  stress_lossfn=None, orbital_lossfn=None,
-                 v_delta_lossfn=None):
+                 v_delta_lossfn=None, psi_lossfn=None):
         # energy term
         if energy_lossfn is None:
             energy_lossfn = {}
@@ -124,7 +138,15 @@ class Evaluator:
         if isinstance(v_delta_lossfn, dict):
             v_delta_lossfn = make_loss(**v_delta_lossfn)
         self.vd_factor = v_delta_factor
-        self.vd_lossfn = v_delta_lossfn              
+        self.vd_lossfn = v_delta_lossfn
+        # psi term
+        if psi_lossfn is None:
+            psi_lossfn = {}
+        if isinstance(psi_lossfn, dict):
+            psi_lossfn = make_loss(**psi_lossfn)
+        self.psi_factor = psi_factor
+        self.psi_lossfn = psi_lossfn   
+        self.psi_occ = psi_occ           
         # coulomb term of dm; requires head gradient
         self.d_factor = density_factor
         # gradient penalty, not very useful
@@ -143,6 +165,7 @@ class Evaluator:
                         or (self.s_factor > 0 and "lb_s" in sample) 
                         or (self.o_factor > 0 and "lb_o" in sample)
                         or (self.vd_factor > 0 and "lb_vd" in sample)
+                        or (self.psi_factor > 0 and "lb_psi" in sample)
                         or (self.d_factor > 0 and "gldv" in sample)
                         or self.g_penalty > 0)
         eig.requires_grad_(requires_grad)
@@ -184,6 +207,19 @@ class Evaluator:
                 vd_pred = torch.einsum("...kxyap,...ap->...kxy", vdp, gev)
                 tot_loss = tot_loss + self.vd_factor * self.vd_lossfn(vd_pred, vd_label)
                 loss.append(self.vd_factor * self.vd_lossfn(vd_pred, vd_label))
+            # optional psi calculation
+            if self.psi_factor > 0 and "lb_psi" in sample:
+                psi_label, h_base = sample["lb_psi"], sample["h_base"]
+                vdp = sample["vdp"]
+                v_delta = torch.einsum("...kxyap,...ap->...kxy", vdp, gev)
+                if "L_inv" in sample:
+                    L_inv=sample["L_inv"]
+                    band_pred,psi_pred=generalized_eigh(h_base+v_delta,L_inv)
+                else:
+                    band_pred,psi_pred= torch.linalg.eigh(h_base+v_delta,UPLO='U')
+                psi_loss = self.psi_factor * cal_psi_loss(psi_pred,psi_label,self.psi_occ)
+                tot_loss = tot_loss + psi_loss
+                loss.append(psi_loss)
             # density loss with fix head grad
             if self.d_factor > 0 and "gldv" in sample:
                 gldv = sample["gldv"]
@@ -209,6 +245,9 @@ class Evaluator:
         # optional v_delta calculation
         if self.vd_factor > 0 and "lb_vd" in data_keys:
             info+=f"{name}_v_delta".rjust(len)
+        # optional psi calculation
+        if self.psi_factor > 0 and "lb_psi" in data_keys:
+            info+=f"{name}_psi".rjust(len)
         # density loss with fix head grad
         if self.d_factor > 0 and "gldv" in data_keys:
             info+=f"{name}_density".rjust(len)
@@ -216,8 +255,8 @@ class Evaluator:
 
 
 def train(model, g_reader, n_epoch=1000, test_reader=None, *,
-          energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., density_factor=0.,
-          energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, grad_penalty=0.,
+          energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., psi_factor=0.,psi_occ=0,density_factor=0.,
+          energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, grad_penalty=0.,
           start_lr=0.001, decay_steps=100, decay_rate=0.96, stop_lr=None,
           weight_decay=0.,  fix_embedding=False,
           display_epoch=100, ckpt_file="model.pth",
@@ -242,9 +281,10 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
     evaluator = Evaluator(energy_factor=energy_factor, force_factor=force_factor, 
                           stress_factor=stress_factor, orbital_factor=orbital_factor,
                           v_delta_factor=v_delta_factor,
+                          psi_factor=psi_factor, psi_occ=psi_occ,
                           energy_lossfn=energy_loss, force_lossfn=force_loss,
                           stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
-                          v_delta_lossfn=v_delta_loss,
+                          v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
                           density_factor=density_factor, grad_penalty=grad_penalty)
     # make test evaluator that only returns l2loss of energy
     test_eval = Evaluator(energy_factor=1., energy_lossfn=L2LOSS, 
@@ -252,6 +292,8 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
 
     print("# epoch      trn_err   tst_err        lr  trn_time  tst_time",end='')
     data_keys = g_reader.readers[0].sample_all().keys()
+    # L_inv_in=1 if "L_inv" in data_keys else 0
+    # print("if L_inv in sample:",L_inv_in)
     evaluator.print_head("trn_loss",data_keys)
     tic = time()
     trn_loss = np.mean([[loss_term.item() for loss_term in evaluator(model, batch)]
