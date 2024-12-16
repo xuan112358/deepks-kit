@@ -143,6 +143,16 @@ def cal_psi_loss(psi_pred,psi_label,psi_occ):
     #print("loss.shape:",loss.shape)
     return loss
 
+def get_occ_func(occ):
+    if isinstance(occ, int):
+        def get_occ(natom):
+            return occ  
+    elif isinstance(occ, dict):
+        new_occ={int(natom):int(n_occ) for (natom,n_occ) in occ.items()}
+        def get_occ(natom):
+            return new_occ[natom] 
+    return get_occ
+
 class Evaluator:
     def __init__(self,
                  energy_factor=1., force_factor=0., 
@@ -198,7 +208,7 @@ class Evaluator:
             psi_lossfn = make_loss(**psi_lossfn)
         self.psi_factor = psi_factor
         self.psi_lossfn = psi_lossfn   
-        self.psi_occ = psi_occ
+        self.get_psi_occ = get_occ_func(psi_occ)
         #band energy term
         if band_lossfn is None:
             band_lossfn = {}
@@ -206,7 +216,7 @@ class Evaluator:
             band_lossfn = make_loss(**band_lossfn)
         self.band_factor = band_factor
         self.band_lossfn = band_lossfn   
-        self.band_occ = band_occ                   
+        self.get_band_occ = get_occ_func(band_occ)                   
         # coulomb term of dm; requires head gradient
         self.d_factor = density_factor
         # gradient penalty, not very useful
@@ -293,13 +303,14 @@ class Evaluator:
                     # optional psi calculation
                     if self.psi_factor > 0 and "lb_psi" in sample:
                         psi_label = sample["lb_psi"]
-                        psi_loss = self.psi_factor * cal_psi_loss(psi_pred,psi_label,self.psi_occ)
+                        psi_loss = self.psi_factor * cal_psi_loss(psi_pred,psi_label,self.get_psi_occ(natom))
                         tot_loss = tot_loss + psi_loss
                         loss.append(psi_loss)
                     # optional band energy calculation
                     if self.band_factor > 0 and "lb_band" in sample:
                         band_label = sample["lb_band"]
-                        band_loss = self.band_factor * self.band_lossfn(band_pred[...,:self.band_occ], band_label[...,:self.band_occ])
+                        band_occ=self.get_band_occ(natom)
+                        band_loss = self.band_factor * self.band_lossfn(band_pred[...,:band_occ], band_label[...,:band_occ])
                         tot_loss = tot_loss + band_loss
                         loss.append(band_loss)
             # density loss with fix head grad
