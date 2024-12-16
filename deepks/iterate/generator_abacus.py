@@ -88,6 +88,8 @@ def make_abacus_scf_input(fp_params):
         ret += "deepks_v_delta %d\n" % fp_params["deepks_v_delta"]
     if "model_file" in fp_params:
         ret += "deepks_model %s\n" % fp_params["model_file"]
+    if "out_wfc_lcao" in fp_params:
+        ret += "out_wfc_lcao %s\n" % fp_params["out_wfc_lcao"]
     return ret
 
 def make_abacus_scf_stru(sys_data, fp_pp_files, fp_params):

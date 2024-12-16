@@ -176,6 +176,8 @@ class Reader(object):
             self.t_data["lb_vd"] = torch.tensor(
                 np.load(self.h_path)\
                   .reshape(raw_nframes, -1, self.nlocal, self.nlocal)[conv]) #-1 for nks
+            
+            #for v_delta_precalc
             if self.vdp_path is not None and (self.psialpha_path is not None and self.gevdm_path is not None): #both file exist, choose newer ones
                 if os.path.getmtime(self.vdp_path) >= os.path.getmtime(self.psialpha_path):#psialpha and gevdm modified at the same time
                     self.psialpha_path=None
@@ -199,7 +201,8 @@ class Reader(object):
                 # vdp=cal_vdp(psialpha,gevdm)
                 # self.t_data["vdp"] = vdp\
                 #         .reshape(raw_nframes, -1, self.nlocal, self.nlocal, self.natm, self.ndesc)[conv].clone()
-            #for psi labels
+            
+            #for psi labels and band labels
             self.t_data["h_base"]=torch.tensor(
                 np.load(self.h_base_path)\
                   .reshape(raw_nframes, -1, self.nlocal, self.nlocal)[conv]) #-1 for nks
@@ -214,6 +217,8 @@ class Reader(object):
                 band_ref,psi_ref=generalized_eigh(h_ref,L_inv)    
             else:
                 band_ref,psi_ref=torch.linalg.eigh(h_ref,UPLO='U')
+            self.t_data["lb_band"]=band_ref\
+                  .reshape(raw_nframes, -1, self.nlocal)[conv].clone()             
             self.t_data["lb_psi"]=psi_ref\
                   .reshape(raw_nframes, -1, self.nlocal, self.nlocal)[conv].clone()      
         if self.eg_path is not None and self.gveg_path is not None:

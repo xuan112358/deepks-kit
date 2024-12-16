@@ -72,6 +72,7 @@ DEFAULT_SCF_ARGS_ABACUS={
     "run_cmd": "mpirun",
     "sub_size": 1,
     "abacus_path": "/usr/local/bin/ABACUS.mpi",
+    "out_wfc_lcao": 0,
 }
 
 

@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from time import time
-import psutil
+# import psutil
 try:
     import deepks
 except ImportError as e:
@@ -59,8 +59,8 @@ def preprocess(model, g_reader,
         model.set_prefitting(weight, bias, trainable=prefit_trainable)
 
 def cal_v_delta(gev,gevdm,psialpha):
-    process = psutil.Process(os.getpid())
-    before_memory_usage = process.memory_info().rss
+    # process = psutil.Process(os.getpid())
+    # before_memory_usage = process.memory_info().rss
 
     mmax=psialpha.size(-1)
     lmax=int((mmax-1)/2)
@@ -98,9 +98,9 @@ def cal_v_delta(gev,gevdm,psialpha):
         # print(v_delta.shape)
         del vdp_nl
 
-    after_memory_usage = process.memory_info().rss
-    memory_growth = after_memory_usage - before_memory_usage
-    print(f"Memory growth during cal vdp: {memory_growth / 1024 /1024 } MB")
+    # after_memory_usage = process.memory_info().rss
+    # memory_growth = after_memory_usage - before_memory_usage
+    # print(f"Memory growth during cal vdp: {memory_growth / 1024 /1024 } MB")
 
     # print("v_delta.shape",v_delta.shape)
     return v_delta
@@ -149,10 +149,12 @@ class Evaluator:
                  stress_factor=0., orbital_factor=0.,
                  v_delta_factor=0., 
                  psi_factor=0., psi_occ=0,
+                 band_factor=0.,band_occ=0,
                  density_factor=0., grad_penalty=0., 
                  energy_lossfn=None, force_lossfn=None, 
                  stress_lossfn=None, orbital_lossfn=None,
-                 v_delta_lossfn=None, psi_lossfn=None):
+                 v_delta_lossfn=None, psi_lossfn=None,
+                 band_lossfn=None):
         # energy term
         if energy_lossfn is None:
             energy_lossfn = {}
@@ -195,7 +197,15 @@ class Evaluator:
             psi_lossfn = make_loss(**psi_lossfn)
         self.psi_factor = psi_factor
         self.psi_lossfn = psi_lossfn   
-        self.psi_occ = psi_occ           
+        self.psi_occ = psi_occ
+        #band energy term
+        if band_lossfn is None:
+            band_lossfn = {}
+        if isinstance(band_lossfn, dict):
+            band_lossfn = make_loss(**band_lossfn)
+        self.band_factor = band_factor
+        self.band_lossfn = band_lossfn   
+        self.band_occ = band_occ                   
         # coulomb term of dm; requires head gradient
         self.d_factor = density_factor
         # gradient penalty, not very useful
@@ -215,6 +225,7 @@ class Evaluator:
                         or (self.o_factor > 0 and "lb_o" in sample)
                         or (self.vd_factor > 0 and "lb_vd" in sample)
                         or (self.psi_factor > 0 and "lb_psi" in sample)
+                        or (self.band_factor > 0 and "lb_band" in sample)
                         or (self.d_factor > 0 and "gldv" in sample)
                         or self.g_penalty > 0)
         eig.requires_grad_(requires_grad)
@@ -250,31 +261,42 @@ class Evaluator:
                 o_pred = torch.einsum("...iap,...ap->...i", op, gev)
                 tot_loss = tot_loss + self.o_factor * self.o_lossfn(o_pred, o_label)
                 loss.append(self.o_factor * self.o_lossfn(o_pred, o_label))
-            if (self.vd_factor > 0 and "lb_vd" in sample) or (self.psi_factor > 0 and "lb_psi" in sample):
+            if (self.vd_factor > 0 and "lb_vd" in sample) or (self.psi_factor > 0 and "lb_psi" in sample) or (self.band_factor > 0 and "lb_band" in sample):
+                # cal v_delta
                 if "vdp" in sample:
                     vdp = sample["vdp"]
                     vd_pred = torch.einsum("...kxyap,...ap->...kxy", vdp, gev)
                 elif "psialpha" in sample and "gevdm" in sample:                  
-                    start=time()
+                    # start=time()
                     vd_pred = cal_v_delta(gev,sample["gevdm"],sample["psialpha"])
-                    end=time()
-                    print("cal vdp time in batch:",end-start)
+                    # end=time()
+                    # print("cal vdp time in batch:",end-start)
+                
                 # optional v_delta calculation
                 if self.vd_factor > 0 and "lb_vd" in sample:
                     vd_label = sample["lb_vd"]
                     tot_loss = tot_loss + self.vd_factor * self.vd_lossfn(vd_pred, vd_label)
                     loss.append(self.vd_factor * self.vd_lossfn(vd_pred, vd_label))
-                # optional psi calculation
-                if self.psi_factor > 0 and "lb_psi" in sample:
-                    psi_label, h_base = sample["lb_psi"], sample["h_base"]
+                
+                if (self.psi_factor > 0 and "lb_psi" in sample) or (self.band_factor > 0 and "lb_band" in sample):
+                    h_base = sample["h_base"]
                     if "L_inv" in sample:
                         L_inv=sample["L_inv"]
                         band_pred,psi_pred=generalized_eigh(h_base+vd_pred,L_inv)
                     else:
                         band_pred,psi_pred= torch.linalg.eigh(h_base+vd_pred,UPLO='U')
-                    psi_loss = self.psi_factor * cal_psi_loss(psi_pred,psi_label,self.psi_occ)
-                    tot_loss = tot_loss + psi_loss
-                    loss.append(psi_loss)
+                    # optional psi calculation
+                    if self.psi_factor > 0 and "lb_psi" in sample:
+                        psi_label = sample["lb_psi"]
+                        psi_loss = self.psi_factor * cal_psi_loss(psi_pred,psi_label,self.psi_occ)
+                        tot_loss = tot_loss + psi_loss
+                        loss.append(psi_loss)
+                    # optional band energy calculation
+                    if self.band_factor > 0 and "lb_band" in sample:
+                        band_label = sample["lb_band"]
+                        band_loss = self.band_factor * self.band_lossfn(band_pred[...,:self.band_occ], band_label[...,:self.band_occ])
+                        tot_loss = tot_loss + band_loss
+                        loss.append(band_loss)
             # density loss with fix head grad
             if self.d_factor > 0 and "gldv" in sample:
                 gldv = sample["gldv"]
@@ -284,7 +306,7 @@ class Evaluator:
         return loss
     
     def print_head(self,name,data_keys):
-        len=30
+        len=18
         info=f"{name}_energy".rjust(len)
         if self.g_penalty > 0 and "eg0" in data_keys:
             info+=f"{name}_grad".rjust(len)
@@ -303,6 +325,9 @@ class Evaluator:
         # optional psi calculation
         if self.psi_factor > 0 and "lb_psi" in data_keys:
             info+=f"{name}_psi".rjust(len)
+        # optional band energy calculation
+        if self.band_factor > 0 and "lb_band" in data_keys:
+            info+=f"{name}_band".rjust(len)            
         # density loss with fix head grad
         if self.d_factor > 0 and "gldv" in data_keys:
             info+=f"{name}_density".rjust(len)
@@ -310,8 +335,8 @@ class Evaluator:
 
 
 def train(model, g_reader, n_epoch=1000, test_reader=None, *,
-          energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., psi_factor=0.,psi_occ=0,density_factor=0.,
-          energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, grad_penalty=0.,
+          energy_factor=1., force_factor=0., stress_factor=0., orbital_factor=0., v_delta_factor=0., psi_factor=0.,psi_occ=0, band_factor=0.,band_occ=0,density_factor=0.,
+          energy_loss=None, force_loss=None, stress_loss=None, orbital_loss=None, v_delta_loss=None, psi_loss=None, band_loss=None, grad_penalty=0.,
           start_lr=0.001, decay_steps=100, decay_rate=0.96, stop_lr=None,
           weight_decay=0.,  fix_embedding=False,
           display_epoch=100, ckpt_file="model.pth",
@@ -337,9 +362,11 @@ def train(model, g_reader, n_epoch=1000, test_reader=None, *,
                           stress_factor=stress_factor, orbital_factor=orbital_factor,
                           v_delta_factor=v_delta_factor,
                           psi_factor=psi_factor, psi_occ=psi_occ,
+                          band_factor=band_factor, band_occ=band_occ,
                           energy_lossfn=energy_loss, force_lossfn=force_loss,
                           stress_lossfn=stress_loss, orbital_lossfn=orbital_loss,
                           v_delta_lossfn=v_delta_loss,psi_lossfn=psi_loss,
+                          band_lossfn=band_loss,
                           density_factor=density_factor, grad_penalty=grad_penalty)
     # make test evaluator that only returns l2loss of energy
     test_eval = Evaluator(energy_factor=1., energy_lossfn=L2LOSS, 
@@ -450,10 +477,10 @@ def main(train_paths, test_paths=None,
         model = CorrNet(**model_args).double()
         
     preprocess(model, g_reader, **preprocess_args)
-    start=time()
+    # start=time()
     train(model, g_reader, test_reader=test_reader, **train_args)
-    end=time()
-    print("all train time:",end-start)
+    # end=time()
+    # print("all train time:",end-start)
 
 
 if __name__ == "__main__":
