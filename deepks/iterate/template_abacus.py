@@ -37,6 +37,7 @@ NAME_TYPE = {   'H': 1, 'He': 2, 'Li': 3, 'Be': 4, 'B': 5, 'C': 6, 'N': 7,
             ## 'Fl': 114, 'Uup': 115, 'Lv': 116, 'Uus': 117, 'Uuo': 118
         } #dict
 TYPE_NAME ={v:k for k, v in NAME_TYPE.items()}
+TYPE_INDEX = {k:v for k, v in NAME_TYPE.items()}
 
 ABACUS_CMD="bash run_abacus.sh"
 
@@ -44,7 +45,7 @@ DEFAULT_SCF_ARGS_ABACUS={
     "orb_files": ["orb"],  #atomic number order
     "pp_files": ["upf"],  #atomic number order
     "proj_file": ["orb"], 
-    "ntype": 1,
+    "ntype": 0,
     "nspin": 1,
     "symmetry": 0,
     "nbands": None,
@@ -56,8 +57,8 @@ DEFAULT_SCF_ARGS_ABACUS={
     "gamma_only": 1,
     "k_points": None,
     "kspacing": None,
-    "smearing_method":"gaussian",
-    "smearing_sigma":0.02,
+    "smearing_method":"fixed",
+    "smearing_sigma":0.001,
     "mixing_type": "pulay",
     "mixing_beta": 0.4,
     "cal_force": 0,
@@ -74,6 +75,18 @@ DEFAULT_SCF_ARGS_ABACUS={
     "abacus_path": "/usr/local/bin/ABACUS.mpi",
     "out_wfc_lcao": 0,
 }
+
+def coord_to_atom(path):
+    coords = np.load(f"{path}/coord.npy")
+    nframes = coords.shape[0]
+    # get type_map.raw and type.raw, use it
+    with open(f"{path}/type_map.raw") as fp:
+        my_type_map =[TYPE_INDEX[i] for i in fp.read().split()]
+    atom_types = np.loadtxt(f"{path}/type.raw", ndmin=1).astype(int)
+    atom_types = np.array([int(my_type_map[i-1]) for i in atom_types])\
+        .reshape(1,-1).repeat(nframes,axis=0)
+    atom_data = np.insert(coords, 0, values=atom_types, axis=2)
+    return atom_data
 
 
 def make_scf_abacus(systems_train, systems_test=None, *,
@@ -167,7 +180,10 @@ def convert_data(systems_train, systems_test=None, *,
             pre_args["model_file"]="../../../"+CMODEL_FILE
     #init sys_data (dpdata)
     for i, sset in enumerate(train_sets+test_sets):
-        atom_data = np.load(f"{sys_paths[i]}/atom.npy")
+        try:
+            atom_data = np.load(f"{sys_paths[i]}/atom.npy")
+        except FileNotFoundError:
+            atom_data = coord_to_atom(sys_paths[i])
         if os.path.isfile(f"{sys_paths[i]}/box.npy"):
             cell_data = np.load(f"{sys_paths[i]}/box.npy")
         nframes = atom_data.shape[0]
@@ -314,7 +330,10 @@ def make_run_scf_abacus(systems_train, systems_test=None,
             "errlog": errlog
         }
         for i, pth in enumerate(sys_paths):
-            atom_data = np.load(f"{str(pth)}/atom.npy")
+            try:
+                atom_data = np.load(f"{str(pth)}/atom.npy")
+            except FileNotFoundError:
+                atom_data = coord_to_atom(str(pth))
             nframes = atom_data.shape[0]
             for f in range(nframes):
                 singletask["command"]=str(f"cd {sys_name[i]}/ABACUS/{f}/ &&  \
@@ -341,7 +360,10 @@ def make_run_scf_abacus(systems_train, systems_test=None,
     else:
         batch_tasks=[]
         for i, pth in enumerate(sys_paths):
-            atom_data = np.load(f"{str(pth)}/atom.npy")
+            try:
+                atom_data = np.load(f"{str(pth)}/atom.npy")
+            except FileNotFoundError:
+                atom_data = coord_to_atom(str(pth))
             nframes = atom_data.shape[0]
             for f in range(nframes):
                 batch_tasks.append(BatchTask(
@@ -389,7 +411,10 @@ def gather_stats_abacus(systems_train, systems_test,
     for i in range(len(systems_train)):
         if not os.path.exists(train_dump + '/' + sys_train_names[i]):
             os.mkdir(train_dump + '/' + sys_train_names[i])
-        atom_data = np.load(f"{sys_train_paths[i]}/atom.npy")
+        try:
+            atom_data = np.load(f"{sys_train_paths[i]}/atom.npy")
+        except FileNotFoundError:
+            atom_data = coord_to_atom(sys_train_paths[i])
         nframes = atom_data.shape[0]
         c_list=np.full((nframes,1), False)
         d_list=[]
@@ -466,6 +491,7 @@ def gather_stats_abacus(systems_train, systems_test,
         np.save(f"{train_dump}/{sys_train_names[i]}/e_base.npy", e_base)    #Ry to Hartree
         e_ref=np.load(f"{sys_train_paths[i]}/energy.npy")
         np.save(f"{train_dump}/{sys_train_names[i]}/energy.npy", e_ref)
+        np.save(f"{train_dump}/{sys_train_names[i]}/atom.npy", atom_data)
         np.save(f"{train_dump}/{sys_train_names[i]}/l_e_delta.npy", e_ref-e_base)
         np.save(f"{train_dump}/{sys_train_names[i]}/e_tot.npy", np.array(e_list))
         if(cal_force): 
@@ -517,7 +543,10 @@ def gather_stats_abacus(systems_train, systems_test,
     for i in range(len(systems_test)):
         if not os.path.exists(test_dump + '/' + sys_test_names[i]):
             os.mkdir(test_dump + '/' + sys_test_names[i])
-        atom_data = np.load(f"{sys_test_paths[i]}/atom.npy")
+        try:
+            atom_data = np.load(f"{sys_test_paths[i]}/atom.npy")
+        except FileNotFoundError:
+            atom_data = coord_to_atom(sys_test_paths[i])
         nframes = atom_data.shape[0]
         c_list=np.full((nframes,1), False)
         d_list=[]
@@ -593,6 +622,7 @@ def gather_stats_abacus(systems_train, systems_test,
         np.save(f"{test_dump}/{sys_test_names[i]}/e_base.npy", e_base)
         e_ref=np.load(f"{sys_test_paths[i]}/energy.npy")
         np.save(f"{test_dump}/{sys_test_names[i]}/energy.npy", e_ref)
+        np.save(f"{test_dump}/{sys_test_names[i]}/atom.npy", atom_data)
         np.save(f"{test_dump}/{sys_test_names[i]}/l_e_delta.npy", e_ref-e_base)
         np.save(f"{test_dump}/{sys_test_names[i]}/e_tot.npy", np.array(e_list))
         if(cal_force): 

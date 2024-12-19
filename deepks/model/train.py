@@ -300,7 +300,7 @@ class Evaluator:
             # optional orbital(bandgap) calculation
             if self.o_factor > 0 and "lb_o" in sample:
                 o_label, op = sample["lb_o"], sample["op"]
-                o_pred = torch.einsum("...iap,...ap->...i", op, gev)
+                o_pred = torch.einsum("...kiap,...ap->...ki", op, gev)
                 tot_loss = tot_loss + self.o_factor * self.o_lossfn(o_pred, o_label)
                 loss.append(self.o_factor * self.o_lossfn(o_pred, o_label))
             if (self.vd_factor > 0 and "lb_vd" in sample) or (self.psi_factor > 0 and "lb_psi" in sample) \

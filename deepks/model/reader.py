@@ -164,11 +164,9 @@ class Reader(object):
                   .reshape(raw_nframes, 6, self.natm, self.ndesc)[conv])
         if self.o_path is not None and self.op_path is not None:
             self.t_data["lb_o"] = torch.tensor(
-                np.load(self.o_path)\
-                  .reshape(raw_nframes, -1)[conv])
+                np.load(self.o_path)[conv])
             self.t_data["op"] = torch.tensor(
-                np.load(self.op_path)\
-                    .reshape(raw_nframes, -1, self.natm, self.ndesc)[conv])
+                np.load(self.op_path)[conv])
         if self.h_path is not None and (self.vdp_path is not None or (self.psialpha_path is not None and self.gevdm_path is not None)):
             h_shape = np.load(self.h_path).shape
             assert h_shape[-1] == h_shape[-2], \
