@@ -26,6 +26,8 @@ Below is a sample ``scf_abacus.yaml`` file for single water molecule, with the e
 .. code-block:: yaml
 
   scf_abacus:
+    # below are default args, users can also set them for each group in  
+    # ../systems/group.xx/scf_abacus.yaml
     # INPUT args; keywords that related to INPUT file in ABACUS
     ntype: 2                    # int; number of different atom species in this calculations, e.g., 2 for H2O
     nbands: 8                   # int; number of bands to be calculated; optional
@@ -38,8 +40,9 @@ Below is a sample ``scf_abacus.yaml`` file for single water molecule, with the e
     cal_stress: 0               # bool; 1 for stress calculation
     
     # STRU args; keywords that related to INPUT file in ABACUS
-    # below are default STRU args, users can also set them for each group in  
-    # ../systems/group.xx/stru_abacus.yaml
+    pp_orb_elments: ["O", "H"]  # list of strings; corresponding element symbols for orb_files and pp_files
+                                # by setting this, the pp/orb files will be set based on the atomic elements contained within the group, otherwise they are set sequentially
+                                # particularly useful when the types or sequences of elements in each group are different.
     orb_files: ["O_gga_6au_60Ry_2s2p1d.orb", "H_gga_6au_60Ry_2s1p.orb"] # atomic orbital file list for each element; 
                                                                         # order should be consistent with that in atom.npy
     pp_files: ["O_ONCV_PBE-1.0.upf", "H_ONCV_PBE-1.0.upf"]              # pseudopotential file list for each element; 
@@ -57,6 +60,7 @@ Below is a sample ``scf_abacus.yaml`` file for single water molecule, with the e
   # just note that the recommended value for scf_thr is 1e-7, 
   # and force calculation can be omitted since the init training includes energy label only.
   init_scf_abacus:
+    pp_orb_elments: ["O", "H"]
     orb_files: ["O_gga_6au_60Ry_2s2p1d.orb", "H_gga_6au_60Ry_2s1p.orb"]
     pp_files: ["O_ONCV_PBE-1.0.upf", "H_ONCV_PBE-1.0.upf"]
     proj_file: ["jle.orb"]
@@ -96,6 +100,14 @@ or via ``kspacing`` as:
   init_scf_abacus:
     <...other keywords>
     kspacing: 0.1
+
+If you need to specify parameters for each group, set it in scf_abacus.yaml in each group folder. No need to distinguish between the init_scf_abacus or scf_abacus levels in this file. For example:
+
+.. code-block:: yaml
+
+  gamma_only: 0
+  lattice_vector: [[20, 0, 0], [0, 20, 0], [0, 0, 20]]
+  k_points: [4,4,4,0,0,0]
 
 .. _machine.yaml:
 
